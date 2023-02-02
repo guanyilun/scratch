@@ -37,8 +37,6 @@ class Emulator:
         labels = torch.as_tensor(res_list, dtype=torch.float)
         if len(features.shape) == 1: features = features.reshape(-1, 1)
         if len(labels.shape) == 1: labels = labels.reshape(-1, 1)
-        print("input shape:", features.shape)
-        print("output shape:", labels.shape)
 
         # split into train and test 
         train_features, test_features, train_labels, test_labels = train_test_split(features, labels, test_size=0.2)
@@ -54,7 +52,7 @@ class Emulator:
         train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
 
         # build model, optimizer and loss function
-        model = self.NNClass(idim=features.shape[-1], odim=labels.shape[-1]).to(device)
+        model = self.NNClass(features.shape[-1], labels.shape[-1]).to(device)
         optimizer = self.optimizer(model.parameters())
         criterion = self.criterion
 
@@ -101,7 +99,7 @@ class Emulator:
 
 # a decorator interface
 class emulate:
-    def __init__(self, samples, NNClass=Net, epoches=100, lr=0.001, momentum=0.9, **kwargs):
+    def __init__(self, samples, NNClass=Net, epoches=100, lr=0.01, momentum=0.9, **kwargs):
         optimizer = partial(optim.SGD, lr=lr, momentum=momentum)
         self.em = Emulator(NNClass=NNClass, epoches=epoches, optimizer=optimizer, **kwargs)
         self.samples = samples
