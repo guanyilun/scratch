@@ -22,7 +22,7 @@ class Emulator:
         # samples: dict[parameter_name] -> list of choices, assume all choices are float and have the same length
         return np.vstack([np.array(v) for _, v in samples.items()]).T
 
-    def emulate(self, func, samples, verbose=False):
+    def emulate(self, func, samples):
         features = self.get_samples(samples)
 
         # run all combinations and gather results
@@ -37,6 +37,8 @@ class Emulator:
         labels = torch.as_tensor(res_list, dtype=torch.float)
         if len(features.shape) == 1: features = features.reshape(-1, 1)
         if len(labels.shape) == 1: labels = labels.reshape(-1, 1)
+        print("input shape:", features.shape)
+        print("output shape:", labels.shape)
 
         # split into train and test 
         train_features, test_features, train_labels, test_labels = train_test_split(features, labels, test_size=0.2)
@@ -58,7 +60,8 @@ class Emulator:
 
         # train the model
         print("Training emulator...")
-        for epoch in tqdm(range(self.epoches)):
+        pbar = tqdm(range(self.epoches))
+        for epoch in pbar:
             running_loss = 0.0
             for i, (inputs, labels) in enumerate(train_loader):
                 # zero the parameter gradients
@@ -72,7 +75,7 @@ class Emulator:
 
                 # print statistics
                 running_loss += loss.item()
-            if verbose: print('Epoch {} loss: {:.3f}'.format(epoch + 1, running_loss / (i + 1)))
+            pbar.set_postfix({'loss': f"{running_loss/(i+1):.3f}"})
 
         # Test the model
         with torch.no_grad():
@@ -91,7 +94,7 @@ class Emulator:
             if None in values: raise ValueError('Missing argument')
             values = torch.as_tensor(values, dtype=torch.float)
             res = model(values).detach().numpy()
-            if len(res.shape) == 1: res = res[0]
+            if len(res.shape) == 1 and len(res) == 1: res = res[0]
             return res
         emulated_func.model = model if device=='cpu' else model.cpu()
         return emulated_func
