@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from functools import partial
 from tqdm import tqdm
+from collections import OrderedDict
 
 from torch import nn, optim
 from torch.utils.data import TensorDataset, DataLoader
@@ -11,12 +12,13 @@ from network import Net
 
 
 class Emulator:
-    def __init__(self, NNClass=Net, epoches=100, test_size=0.2, optimizer=None, criterion=None, **kwargs):
+    def __init__(self, NNClass=Net, epoches=100, test_size=0.2, optimizer=None, criterion=None, precondition=None, **kwargs):
         self.NNClass = partial(NNClass, **kwargs)
         self.epoches = epoches
         self.test_size = test_size
         self.optimizer = optimizer if optimizer is not None else partial(optim.SGD, lr=0.001, momentum=0.9)
         self.criterion = criterion if criterion is not None else nn.MSELoss() 
+        self.precondition = precondition  # need to have forward and backward methods for transf and inverse transf
 
     def get_samples(self, samples):
         # samples: dict[parameter_name] -> list of choices, assume all choices are float and have the same length
@@ -29,12 +31,14 @@ class Emulator:
         res_list = []
         for i in range(features.shape[0]):  # samples has shape (n_samples, n_parameters)
             res = func(**{k:v for k, v in zip(samples.keys(), features[i,:])})
+            # optionally apply a transformation
+            if self.precondition is not None: res = self.precondition.forward(res)
             res_list.append(res)
 
         # we can train a model
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         features = torch.as_tensor(features, dtype=torch.float)
-        labels = torch.as_tensor(res_list, dtype=torch.float)
+        labels = torch.as_tensor(np.array(res_list), dtype=torch.float)
         if len(features.shape) == 1: features = features.reshape(-1, 1)
         if len(labels.shape) == 1: labels = labels.reshape(-1, 1)
 
@@ -92,6 +96,7 @@ class Emulator:
             if None in values: raise ValueError('Missing argument')
             values = torch.as_tensor(values, dtype=torch.float)
             res = model(values).detach().numpy()
+            if self.precondition is not None: res = self.precondition.backward(res)
             if len(res.shape) == 1 and len(res) == 1: res = res[0]
             return res
         emulated_func.model = model if device=='cpu' else model.cpu()
@@ -99,9 +104,15 @@ class Emulator:
 
 # a decorator interface
 class emulate:
-    def __init__(self, samples, NNClass=Net, epoches=100, lr=0.01, momentum=0.9, **kwargs):
-        optimizer = partial(optim.SGD, lr=lr, momentum=momentum)
+    def __init__(self, samples=None, NNClass=Net, epoches=100, lr=0.01, momentum=0.9, weight_decay=0, nsamps=1000, **kwargs):
+        optimizer = partial(optim.SGD, lr=lr, momentum=momentum, weight_decay=weight_decay)
         self.em = Emulator(NNClass=NNClass, epoches=epoches, optimizer=optimizer, **kwargs)
         self.samples = samples
+        self.nsamps = nsamps  # only used when samples is None
     def __call__(self, func):
+        if self.samples is None:
+            # get samples from function signature
+            import inspect
+            sig = inspect.signature(func)
+            self.samples = OrderedDict({k: np.random.randn(self.nsamps) for k in sig.parameters.keys()})
         return self.em.emulate(func, self.samples)
