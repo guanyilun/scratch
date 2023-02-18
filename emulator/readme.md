@@ -18,3 +18,5 @@ def calculation(a=1,b=2,c=3):
 ```
 
 and expect the calculation function is an emulated version of it instead of its actual implementation. The philosophy is to make the interaction with emulator as seamless as possible.
+
+Update 2023-02-17: the idea development has become mature enough to be managed under its own project: see [the galilei project](https://github.com/guanyilun/galilei)
