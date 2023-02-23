@@ -29,7 +29,8 @@ class SchedulerEnv(gym.Env):
         self.window = None
         self.clock = None
         self.window_x = 1024
-        self.window_y = 768
+        self.window_y = 256
+
 
         self.nside = nside
         self.npix = hp.nside2npix(self.nside)
@@ -146,14 +147,12 @@ class SchedulerEnv(gym.Env):
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
-        hitcount = project_hitcount(self._state['hitcount'], self.target_geometry)
-        # hitcount = np.arctanh(hitcount)
-        # if np.max(hitcount) != 0: hitcount /= np.max(hitcount)
-        plt.imshow(hitcount)
-        plt.show()
-        # hitcount = (255*hitcount).astype(np.uint8)
-        # hitcount = np.repeat(hitcount[...,None], 3, axis=2)
-        hitcount_surface = pygame.surfarray.make_surface(hitcount)
+        hitcount = project_hitcount(self._state['hitcount'], self.target_geometry).astype('f8')
+        hitcount = np.arcsinh(hitcount)
+        if np.max(hitcount) != 0: hitcount /= np.max(hitcount)
+        hitcount = np.repeat(hitcount[...,None], 3, axis=2)
+        hitcount = (np.swapaxes(hitcount, 0, 1)*255).astype(np.uint8)
+        hitcount_surface = pygame.surfarray.make_surface(255-hitcount)
         canvas = pygame.Surface((self.window_x, self.window_y))
         canvas.fill((255, 255, 255))
 
@@ -182,5 +181,5 @@ class SchedulerEnv(gym.Env):
 # utility functions
 def project_hitcount(hitcount_hp, car_geometry):
     # project healpix to CAR pixelization
-    hitcount_car = reproject.enmap_from_healpix(hitcount_hp, *car_geometry) 
-    return np.array(hitcount_car[0])
+    hitcount_car = reproject.healpix2map(hitcount_hp, *car_geometry, method='spline')
+    return np.array(hitcount_car)
