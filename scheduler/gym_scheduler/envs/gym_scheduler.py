@@ -1,6 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import pygame
+import matplotlib.pyplot as plt
 
 import numpy as np
 from collections import OrderedDict
@@ -147,8 +148,11 @@ class SchedulerEnv(gym.Env):
 
         hitcount = project_hitcount(self._state['hitcount'], self.target_geometry)
         # hitcount = np.arctanh(hitcount)
-        hitcount /= np.max(hitcount)
-        hitcount = np.repeat(hitcount[:,:,None], 3, axis=2)
+        # if np.max(hitcount) != 0: hitcount /= np.max(hitcount)
+        plt.imshow(hitcount)
+        plt.show()
+        # hitcount = (255*hitcount).astype(np.uint8)
+        # hitcount = np.repeat(hitcount[...,None], 3, axis=2)
         hitcount_surface = pygame.surfarray.make_surface(hitcount)
         canvas = pygame.Surface((self.window_x, self.window_y))
         canvas.fill((255, 255, 255))
