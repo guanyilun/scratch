@@ -27,7 +27,8 @@ class SchedulerEnv(gym.Env):
     ):
         self.window = None
         self.clock = None
-        self.window_size = 256
+        self.window_x = 1024
+        self.window_y = 768
 
         self.nside = nside
         self.npix = hp.nside2npix(self.nside)
@@ -110,13 +111,14 @@ class SchedulerEnv(gym.Env):
         else:
             # if we collect data, start scanning
             scan = schedlib.Scan(t0=self._state['t'], t1=self._state['t']+action['duration'], az=self._state['az'], el=self._state['el'], throw=action['throw'], velocity=action['velocity'])
-            # update hitcount (in-place)
-            schedlib.scan2hitcount(scan, hitcount=self._state['hitcount'])
-            # update state
-            ts, az, el = schedlib.get_azel(scan, srate=self._srate)
-            self._state['az'] = az[-1]
-            self._state['el'] = el[-1]
-            self._state['t'] = ts[-1]
+            if int(np.floor((scan.t1 - scan.t0)*self._srate)) > 0:
+                # update hitcount (in-place)
+                schedlib.scan2hitcount(scan, hitcount=self._state['hitcount'])
+                # update state
+                ts, az, el = schedlib.get_azel(scan, srate=self._srate)
+                self._state['az'] = az[-1]
+                self._state['el'] = el[-1]
+                self._state['t'] = ts[-1]
             
         observation = {
             'az': self._state['az'],
@@ -138,26 +140,24 @@ class SchedulerEnv(gym.Env):
             pygame.init()
             pygame.display.init()
             self.window = pygame.display.set_mode(
-                # (self.window_size, self.window_size)
-                self.target_geometry[0][::-1]
+                (self.window_x, self.window_y)
             )
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
         hitcount = project_hitcount(self._state['hitcount'], self.target_geometry)
+        # hitcount = np.arctanh(hitcount)
+        hitcount /= np.max(hitcount)
+        hitcount = np.repeat(hitcount[:,:,None], 3, axis=2)
         hitcount_surface = pygame.surfarray.make_surface(hitcount)
-        # canvas = pygame.Surface((self.window_size, self.window_size))
-        canvas = pygame.Surface(self.target_geometry[0][::-1])
+        canvas = pygame.Surface((self.window_x, self.window_y))
         canvas.fill((255, 255, 255))
 
         if self.render_mode == "human":
             # display the hitcount surface on the canvas
-            canvas.blit(hitcount_surface, (0, 0))
-
+            canvas.blit(pygame.transform.scale(hitcount_surface, (self.window_x, self.window_y)), (0, 0))
             # The following line copies our drawings from `canvas` to the visible window
             self.window.blit(canvas, canvas.get_rect())
-            # draw an image of the sky
-            # plot the array of hitcount in pygame
             pygame.event.pump()
             pygame.display.update()
 
