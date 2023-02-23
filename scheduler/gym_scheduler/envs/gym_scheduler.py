@@ -29,13 +29,13 @@ class SchedulerEnv(gym.Env):
         self.window = None
         self.clock = None
         self.window_x = 1024
-        self.window_y = 256
+        self.window_y = 428
 
 
         self.nside = nside
         self.npix = hp.nside2npix(self.nside)
         if target_geometry is None:
-            self.target_geometry = enmap.band_geometry(dec_cut=np.deg2rad([-60,30]), res=np.deg2rad(1))
+            self.target_geometry = enmap.band_geometry(dec_cut=np.deg2rad([-90,60]), res=np.deg2rad(1))
         else:
             self.target_geometry = target_geometry
         shape = self.target_geometry[0]
