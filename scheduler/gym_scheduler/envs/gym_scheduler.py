@@ -1,5 +1,5 @@
-import gymnasium as gym
-from gymnasium import spaces
+import gym
+from gym import spaces
 import pygame
 import matplotlib.pyplot as plt
 
@@ -90,7 +90,8 @@ class SchedulerEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         # We need the following line to seed self.np_random
-        super().reset(seed=seed)
+        # super().reset(seed=seed)
+        # super().reset()
 
         observation = {
             't': self._t0,
