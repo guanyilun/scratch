@@ -6,6 +6,8 @@ import numba
 from typing import NamedTuple
 import healpy as hp
 
+from pixell import reproject
+
 deg = np.deg2rad(1)
 arcmin = np.deg2rad(1/60)
 
@@ -158,3 +160,10 @@ def scan2hitcount(scan, site=None, nside=NSIDE, srate=SRATE, hitcount=None, fp_c
     if fp_convolver is not None: counts = counts*fp_convolver.boost
     hitcount[uniq_pixs] += counts
     return hitcount
+
+
+# utility functions
+def project_hitcount(hitcount_hp, car_geometry):
+    # project healpix to CAR pixelization
+    hitcount_car = reproject.healpix2map(hitcount_hp, *car_geometry, method='spline')
+    return np.array(hitcount_car)

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import OrderedDict
 
-from pixell import enmap, reproject
+from pixell import enmap
 import healpy as hp
 
 from . import schedlib
@@ -16,13 +16,13 @@ class SchedulerEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 4}
 
     def __init__(
-        self, 
-        render_mode=None, 
-        t0=0, 
-        t1=1, 
-        az0=90, 
-        el0=45, 
-        srate=1, 
+        self,
+        render_mode=None,
+        t0=0,
+        t1=1,
+        az0=90,
+        el0=45,
+        srate=1,
         nside=128,
         target_geometry=None
     ):
@@ -51,7 +51,7 @@ class SchedulerEnv(gym.Env):
                 "t": spaces.Box(t0, t1, shape=(1,)),            # current time: FIXME
                 "az": spaces.Box(0, 360, shape=(1,)),           # current azimuth angle
                 "el": spaces.Box(0, 90, shape=(1,)),            # current elevation angle
-                "hitcount": spaces.Box(0, np.inf, shape=shape),     # hitcount: fractional hitcount from 0 to 1. 
+                "hitcount": spaces.Box(0, np.inf, shape=shape),     # hitcount: fractional hitcount from 0 to 1.
                 # "sun": spaces.Dict({
                 #     "az": spaces.Box(0, 360, shape=(1,)),       # azimuth angle of the sun
                 #     "el": spaces.Box(0, 90, shape=(1,)),        # elevation angle of the sun
@@ -81,6 +81,8 @@ class SchedulerEnv(gym.Env):
             'az': az0,
             'el': el0,
             'hitcount': np.zeros(self.npix),
+            'time_not_scanning': 0.0,
+            'obs_eff': 0.0
         })
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
@@ -90,26 +92,37 @@ class SchedulerEnv(gym.Env):
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
 
+        observation = {
+            't': self._t0,
+            'az': self._az0,
+            'el': self._el0,
+            'hitcount': np.zeros(self.npix)
+        }
         self._state['t'] = self._t0
         self._state['az'] = self._az0
         self._state['el'] = self._el0
         self._state['hitcount'] = np.zeros(self.npix)
+        self._state['time_not_scanning'] = 0
+        self._state['obs_off'] = 0
 
         if self.render_mode == "human":
             self._render_frame()
-        return self._state, {}
+        return observation, {}
 
 
     def step(self, action):
-        # check if we need to move first
+        # unless we are close to target, we need to move
         if not (np.isclose(action['az'], self._state['az']) and np.isclose(action['el'], self._state['el'])):
             self._state['t'] += self._time_costs['move']
             self._state['az'] = action['az']
             self._state['el'] = action['el']
-        # check whether we want to collect data
+            self._state['time_not_scanning'] += self._time_costs['move']
+
+        # check whether we want to collect data: collect if on=1
         if action['on'] == 0:
             # if we don't collect data, simply wait at the current location for the duration
             self._state['t'] += action['duration']
+            self._state['time_not_scanning'] += action['duration']
         else:
             # if we collect data, start scanning
             scan = schedlib.Scan(t0=self._state['t'], t1=self._state['t']+action['duration'], az=self._state['az'], el=self._state['el'], throw=action['throw'], velocity=action['velocity'])
@@ -121,21 +134,34 @@ class SchedulerEnv(gym.Env):
                 self._state['az'] = az[-1]
                 self._state['el'] = el[-1]
                 self._state['t'] = ts[-1]
-            
+
         observation = {
             'az': self._state['az'],
             'el': self._state['el'],
             't': self._state['t'],
-            'hitcount': project_hitcount(self._state['hitcount'], self.target_geometry)
+            'hitcount': schedlib.project_hitcount(self._state['hitcount'], self.target_geometry)
         }
+
         terminated = True if self._state['t'] > self._t1 else False
+        done = False
         info = {}
-        reward = 1  # TODO:  implement this
+
+        # observing efficiency: calculate its change
+        obs_eff = self._calc_observing_eff()
+        delta_obs_eff = obs_eff - self._state['obs_eff']
+        self._state['obs_eff'] = obs_eff
+        info['delta_obs_eff'] = delta_obs_eff
+
+        reward = delta_obs_eff
 
         if self.render_mode == "human": self._render_frame()
-        return observation, reward, terminated, info
+        return observation, reward, terminated, done, info
 
-
+    def _calc_observing_eff(self):
+        """calculate t_effective / t_total based on current state"""
+        total = self._state['t'] - self._t0
+        not_scanning = self._state['time_not_scanning']
+        return 1- not_scanning / total
 
     def _render_frame(self):
         if self.window is None and self.render_mode == "human":
@@ -147,7 +173,7 @@ class SchedulerEnv(gym.Env):
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
-        hitcount = project_hitcount(self._state['hitcount'], self.target_geometry).astype('f8')
+        hitcount = schedlib.project_hitcount(self._state['hitcount'], self.target_geometry).astype('f8')
         hitcount = np.arcsinh(hitcount)
         if np.max(hitcount) != 0: hitcount /= np.max(hitcount)
         hitcount = np.repeat(hitcount[...,None], 3, axis=2)
@@ -176,10 +202,3 @@ class SchedulerEnv(gym.Env):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
-
-
-# utility functions
-def project_hitcount(hitcount_hp, car_geometry):
-    # project healpix to CAR pixelization
-    hitcount_car = reproject.healpix2map(hitcount_hp, *car_geometry, method='spline')
-    return np.array(hitcount_car)
