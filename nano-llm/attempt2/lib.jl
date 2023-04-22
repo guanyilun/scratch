@@ -1,40 +1,63 @@
-using Statistics
-using LinearAlgebra
 using MLUtils
-# using TensorOperations
-# using Tullio
+using NNlib
+using Flux
+using LinearAlgebra
+using Statistics
 
-function layer_norm(x; γ, β, ϵ=1e-5, dims=1)
-    μ = mean(x, dims=dims)
-    σ² = var(x, dims=dims)
-    (x .- μ) ./ (σ² .+ ϵ).^0.5 .* γ .+ β
+struct LN
+    γ
+    β
+    ϵ
+    dims
+end
+@Flux.functor LN (γ, β)
+function (m::LN)(x)
+    μ = mean(x, dims=m.dims)
+    σ² = var(x, dims=m.dims)
+    eltype(x).(m.γ .* (x .- μ) ./ (σ² .+ m.ϵ).^0.5 .+ m.β)
+end
+function LN(γ, β)
+    LN(γ, β, 1e-5, 1)
+end
+function LN(n::Integer)
+    LN(Flux.glorot_uniform(n), zeros(n))
 end
 
-function linear(x; W, b)
-    W * x .+ b
+struct FFN
+    fc
+    proj
 end
-
-function ffn(x; c_fc, c_proj)
-    x = gelu.(linear(x; c_fc...))
-    linear(x; c_proj...)
-end 
+@Flux.functor FFN
+(m::FFN)(x) = Chain(m.fc, gelu, m.proj)(x)
 
 function self_attn(q, k, v, mask) # [n_interim, n_seq] -> [n_seq, n_seq] x [n_seq, n_interim] -> [n_seq, n_interim]
-    return v * softmax(q' * k ./ sqrt(size(q, 1)) + mask)
+    attention = k' * q ./ eltype(q)(sqrt(size(q, 1)))
+    attention .+= mask
+    attention .= softmax(attention)  # dims=1 is important, goes with triu mask
+    v * attention
 end
 
-function mha(x; c_attn, c_proj, n_head) # [n_embed, n_seq] -> [n_embed, n_seq]
+struct MHA
+    attn
+    proj
+    n_head
+end
+@Flux.functor MHA (attn, proj)  # n_head is not a trainable parameter
+
+function (m::MHA)(x)
     n_embed, n_seq = size(x)
-    n_interim = n_embed ÷ n_head
+    n_interim = n_embed ÷ m.n_head
 
     # qkv projection
-    qkv = linear(x; c_attn...) # [n_embed, n_seq] -> [n_embed, n_seq]
+    qkv = m.attn(x) # [n_embed, n_seq] -> [n_embed, n_seq]
     q, k, v = chunk(qkv, 3, dims=1) # [n_embed, n_seq] -> [n_embed, n_seq] x 3
 
+    @assert size(q) == size(k) == size(v) == (n_embed, n_seq)
+
     # split into heads
-    q = reshape(q, n_interim, n_head, n_seq) # [n_embed, n_seq] -> [n_seq, n_interim, n_head]
-    k = reshape(k, n_interim, n_head, n_seq) # [n_embed, n_seq] -> [n_seq, n_interim, n_head]
-    v = reshape(v, n_interim, n_head, n_seq) # [n_embed, n_seq] -> [n_seq, n_interim, n_head]
+    q = reshape(q, n_interim, m.n_head, n_seq) # [n_embed, n_seq] -> [n_interim, n_head, n_seq]
+    k = reshape(k, n_interim, m.n_head, n_seq) # [n_embed, n_seq] -> [n_interim, n_head, n_seq]
+    v = reshape(v, n_interim, m.n_head, n_seq) # [n_embed, n_seq] -> [n_interim, n_head, n_seq]
 
     # change order of dimensions
     q = permutedims(q,(1,3,2)) # [n_interim, n_head, n_seq] -> [n_interim, n_seq, n_head]
@@ -42,42 +65,80 @@ function mha(x; c_attn, c_proj, n_head) # [n_embed, n_seq] -> [n_embed, n_seq]
     v = permutedims(v,(1,3,2)) # [n_interim, n_head, n_seq] -> [n_interim, n_seq, n_head]
 
     # causal mask to hide future inputs from being attended to
-    causal_mask = (1 .- tril!(zeros(n_seq, n_seq))) * -1e10 # [n_seq, n_seq]
+    causal_mask = Float32.((1 .- triu!(fill(1, (n_seq, n_seq)))) * -1e10) # [n_seq, n_seq]
 
-    x = zeros(n_interim, n_seq, n_head)
-    # this should be equivalent to the commented out line below
-    # @tullio x[a,b,c] = self_attn(q[:,:,c], k[:,:,c], v[:,:,c], causal_mask)[a,b]
-    for i in 1:n_head
-        x[:,:,i] = @views self_attn(q[:,:,i], k[:,:,i], v[:,:,i], causal_mask)
+    heads = []
+    for i in 1:m.n_head
+        @views push!(heads, self_attn(q[:,:,i], k[:,:,i], v[:,:,i], causal_mask))
     end
-    x = permutedims(x, (1,3,2))
-    x = reshape(x, n_embed, n_seq) # [n_seq, n_interim, n_head] -> [n_seq, n_embed]
-    x = linear(x; c_proj...) # [n_seq, n_embd] -> [n_seq, n_embd]
+
+    cat(heads..., dims=1) |> m.proj
+end
+
+struct TransformerDecoderBlock
+    mha
+    mlp
+    ln1
+    ln2
+end
+@Flux.functor TransformerDecoderBlock
+function (m::TransformerDecoderBlock)(x)
+    x .+= m.mha(m.ln1(x))
+    x .+= m.mlp(m.ln2(x))
     x
 end
 
-function transformer_block(x; mlp, attn, ln1, ln2, n_head)
-    x = x + mha(layer_norm(x; ln1...); attn..., n_head=n_head)
-    x = x + ffn(layer_norm(x; ln2...); mlp...)
+struct GPT2 # GPT2 model
+    wte
+    wpe
+    blocks
+    ln_f
 end
-
-function gpt2(inputs; wte, wpe, blocks, ln_f, n_head)
+@Flux.functor GPT2
+function (m::GPT2)(inputs)
     # token + positional embeddings
-    x = wte[:,inputs] .+ wpe[:,collect(1:length(inputs))] # [n_seq] -> [n_embed, n_seq]
-
-    for i in eachindex(blocks)
-        x = transformer_block(x; blocks[i]..., n_head=n_head)
-    end
-
-    x = layer_norm(x; ln_f...) # [n_embed, n_seq]
+    x = m.wte.weight[:,inputs] .+ m.wpe.weight[:,collect(1:length(inputs))] # [n_seq] -> [n_embed, n_seq]
+    x = Chain(m.blocks..., m.ln_f)(x) # [n_embed, n_seq]
 
     # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
-    wte' * x  
+    m.wte.weight' * x
 end
 
-function generate(inputs; params, n_tokens_to_generate)
+struct GPT2Config
+    vocab_size::Int
+    n_layer::Int
+    n_head::Int
+    n_embed::Int
+    ctx_len::Int
+end
+
+function GPT2(config::GPT2Config)
+    wte = Dense(config.vocab_size => config.n_embed; bias=false) # [n_embed, n_vocab]
+    wpe = Dense(config.ctx_len => config.n_embed; bias=false)    # [n_embed, n_seq]
+
+    blocks = []
+    for _ in 1:config.n_layer
+        push!(blocks, TransformerDecoderBlock(
+            MHA(
+                Dense(config.n_embed => 3*config.n_embed), # attn
+                Dense(config.n_embed => config.n_embed),   # proj
+                config.n_head
+            ),
+            FFN(
+                Dense(config.n_embed => 3*config.ctx_len), # fc
+                Dense(3*config.ctx_len => config.n_embed)  # proj
+            ),
+            LN(config.n_embed),
+            LN(config.n_embed)
+        ))
+    end
+
+    GPT2(wte, wpe, blocks, LayerNorm(config.n_embed))
+end
+
+function generate(gpt2, inputs; n_tokens_to_generate=1)
     for _ in 1:n_tokens_to_generate # auto-regressive decode loop
-        logits = gpt2(inputs; params...) # model forward pass
+        logits = gpt2(inputs) # model forward pass
         next_id = argmax(logits[:,end]) # greedy sampling
         push!(inputs, next_id) # append prediction to input
     end
