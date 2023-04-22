@@ -7,6 +7,8 @@ models_dir = "gpt2_124m"
 hparams, params = hparams_and_params_from_tf_checkpoint(models_dir)
 encoder = get_encoder()
 
+# display(inspect_params(params))
+
 # encode the input string using the BPE tokenizer
 prompt = "Alan Turing theorized that computers would one day become"
 n_tokens_to_generate = 10
@@ -23,3 +25,6 @@ output_ids = generate(input_ids; params, n_tokens_to_generate)
 # decode the ids back into a string
 # -1 is going back to python indexing
 output_text = encoder.decode(output_ids .- 1)
+
+println(prompt)
+println(output_text)

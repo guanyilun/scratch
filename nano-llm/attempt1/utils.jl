@@ -68,17 +68,17 @@ end
 function inspect_params(params; lvl=0, spacing="  ")
     for (k, v) in params
         if isa(v, Dict)
-            println(repeat(spacing, lvl), k, ":")
+            println(repeat(spacing, lvl), k, ": $(typeof(v)) ")
             inspect_params(v; lvl=lvl+1)
         elseif k == :blocks  # hacky
             i = 0
             for v2 in v
-                println(repeat(spacing, lvl), k, "[$i]:")
+                println(repeat(spacing, lvl), k, "[$i]: $(typeof(v2)) ")
                 inspect_params(v2; lvl=lvl+1)
                 i += 1
             end
         elseif isa(v, Array)
-            println(repeat(spacing, lvl), k, ": ", size(v))
+            println(repeat(spacing, lvl), k, ": $(typeof(v)) ", size(v))
         end
     end
 end
