@@ -25,10 +25,17 @@ function ffn(x; c_fc, c_proj)
 end 
 
 function self_attn(q, k, v, mask) # [n_interim, n_seq] -> [n_seq, n_seq] x [n_seq, n_interim] -> [n_seq, n_interim]
-    attention = q' * k ./ Float32(sqrt(size(q, 1)))
+    # option 1: mask needs to use triu
+    attention = k' * q ./ Float32(sqrt(size(q, 1)))
     attention .+= mask
-    attention .= softmax(attention; dims=2)  # dims=2 is important!
-    v * attention'
+    attention .= softmax(attention)  # dims=1 is important!
+    v * attention
+
+    # option 2: mask needs to use tril
+    # attention = q' * k ./ Float32(sqrt(size(q, 1)))
+    # attention .+= mask
+    # attention .= softmax(attention, dims=1)  # dims=2 is important!
+    # v * attention'
 end
 
 function mha(x; c_attn, c_proj, n_head) # [n_embed, n_seq] -> [n_embed, n_seq]
@@ -52,7 +59,7 @@ function mha(x; c_attn, c_proj, n_head) # [n_embed, n_seq] -> [n_embed, n_seq]
     v = permutedims(v,(1,3,2)) # [n_interim, n_head, n_seq] -> [n_interim, n_seq, n_head]
 
     # causal mask to hide future inputs from being attended to
-    causal_mask = Float32.((1 .- tril!(fill(1f0, (n_seq, n_seq)))) * -1e10) # [n_seq, n_seq]
+    causal_mask = Float32.((1 .- triu!(fill(1, (n_seq, n_seq)))) * -1e10) # [n_seq, n_seq]
 
     x = zeros(eltype(q), n_interim, n_seq, n_head)
     heads = []

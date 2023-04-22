@@ -10,8 +10,10 @@ existing library such as Flux or NNlib.
 - Learned how to work with column major convention in julia
 - Understood the basic building blocks
 - Still need to learn how to train such models
-- TODO: Outputs still look wrong, need to investigate
+- Generate outputs that are consistent with picoGPT
+- Realise some trickness in array row / column conversion from python to julia
 
 ## Attempt 2 (in progress)
 Ideas for the second attempt
 - use more building blocks from Flux and NNlib
+- hopefully start to run things on gpu
