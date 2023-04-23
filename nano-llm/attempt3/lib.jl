@@ -94,7 +94,7 @@ GPT2(n_vocab::Integer, n_embed::Integer, n_head::Integer, n_layer::Integer, ctx_
 @Flux.functor GPT2
 function (m::GPT2)(inputs::AbstractArray{T,2}) where T
     # token + positional embeddings
-    x = m.wte.weight[:,inputs] .+ m.wpe.weight[:,collect(1:size(inputs,1))] # [n_seq] -> [n_embed, n_seq]
+    x = m.wte(inputs) .+ m.wpe(collect(1:size(inputs,1))) # [n_seq] -> [n_embed, n_seq]
     x = Chain(m.blocks..., m.ln_f)(x) # [n_embed, n_seq]
     # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
     batched_mul(m.wte.weight', x)

@@ -28,7 +28,6 @@ n_embed = 384
 n_layer = 6
 n_head  = 6
 ctx_len = get_config(lg, "ctx_len")
-model = GPT2(n_vocab, n_embed, n_head, n_layer, ctx_len)
 
 function loss_func(y_pred, y)
     return logitcrossentropy(y_pred, onehotbatch(y, 1:n_vocab))
@@ -43,7 +42,8 @@ else
     device = identity
 end
 # setup optimizer
-model = model |> device
+
+model = GPT2(n_vocab, n_embed, n_head, n_layer, ctx_len) |> device
 opt_state = Flux.setup(Adam(get_config(lg, "learning_rate")), model)
 
 for epoch in 1:get_config(lg, "epochs")
@@ -53,7 +53,7 @@ for epoch in 1:get_config(lg, "epochs")
         x = x |> device
         y = y |> device
         val, grads = Flux.withgradient(model) do m
-            y_pred = m(x) 
+            y_pred = m(x)
             loss_func(y_pred, y)
         end
         Flux.update!(opt_state, model, grads[1])

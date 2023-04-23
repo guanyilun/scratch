@@ -30,6 +30,6 @@ Ideas
 - [X] data loaders
 - [X] basic training
 - [X] wandb integration
-Somehow uses a huge amount of memory, need to investigate further.
+- [X] longer period training on gpu seems fine too, the memory usage is a bit abnormally high, need to investigate
+- [ ] checkpointing
 Try more robust dataloading, DataLoader.jl, MLUtils have some useful.
-Sometimes training break with obscure reasons, need to investigate
