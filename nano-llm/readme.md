@@ -24,6 +24,7 @@ work on training in attempt 3
 
 ## Attempt 3
 Ideas
-- [ ] batched input
-- [ ] use batch_mul
+- [X] batched input
+- [X] use batch_mul
+- [X] get gradient working
 - [ ] robust training
