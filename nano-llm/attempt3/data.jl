@@ -37,11 +37,10 @@ function split_text(splitter::TextSplitter, text::AbstractString)
 end
 
 function batch_sampler(ch::Channel, splitter::TextSplitter; batch_size::Int=8, buffer_size::Int=16, shuffle::Bool=true)
-    out_ch = Channel{Tuple{Array{Int32,2}, Array{Int32,2}}}(buffer_size)
+    out_ch = Channel{Tuple{AbstractArray{Int32,2}, AbstractArray{Int32,2}}}(buffer_size)
     task = @async begin
         batch = []
-        while true
-            text = take!(ch)
+        for text in ch
             splits = split_text(splitter, text)
             shuffle && shuffle!(splits)
             while length(batch) < batch_size
@@ -51,8 +50,8 @@ function batch_sampler(ch::Channel, splitter::TextSplitter; batch_size::Int=8, b
                 push!(batch, popfirst!(splits))
                 if length(batch) == batch_size
                     min_size = minimum(length.(batch))
-                    x = hcat(map(x->x[1:min_size-1], batch)...)
-                    y = hcat(map(x->x[2:min_size], batch)...)
+                    x = hcat(map(x->x[1:min_size-1], batch)...) .+1
+                    y = hcat(map(x->x[2:min_size], batch)...) .+1
                     put!(out_ch, (x, y))
                     batch = []
                 end

@@ -12,7 +12,7 @@ end
 LN(γ, β) = LN(γ, β, 1e-5, 1)
 LN(n::Integer) = LN(ones(Float32, n), zeros(Float32, n))
 @Flux.functor LN
-Flux.trainable(m::LN) = (m.γ, m.β)
+Flux.trainable(m::LN) = (γ=m.γ, β=m.β)
 function (m::LN)(x::AbstractArray{T,N}) where {T,N}
     μ = mean(x, dims=m.dims)
     σ² = var(x, dims=m.dims)
@@ -25,7 +25,7 @@ struct MHA
     n_head
 end
 @Flux.functor MHA
-Flux.trainable(m::MHA) = (m.attn, m.proj)
+Flux.trainable(m::MHA) = (attn=m.attn, proj=m.proj)
 MHA(n_embed::Integer, n_head::Integer) = MHA(Dense(n_embed, 3*n_embed), Dense(n_embed, n_embed), n_head)
 function (m::MHA)(x::AbstractArray{T,3}) where T
     n_embed, n_seq, n_batch = size(x)
@@ -67,6 +67,7 @@ end
 FFN(n_embed::Integer) = FFN(Dense(n_embed, 3*n_embed), Dense(3*n_embed, n_embed))
 (m::FFN)(x) = Chain(m.fc, gelu, m.proj)(x)
 @Flux.functor FFN
+Flux.trainable(m::FFN) = (fc=m.fc, proj=m.proj)
 
 struct TransformerDecoderBlock
     mha
@@ -81,6 +82,7 @@ function (m::TransformerDecoderBlock)(x)
     x
 end
 @Flux.functor TransformerDecoderBlock
+Flux.trainable(m::TransformerDecoderBlock) = (mha=m.mha, mlp=m.mlp, ln1=m.ln1, ln2=m.ln2)
 
 struct GPT2
     wte
@@ -97,6 +99,7 @@ function (m::GPT2)(inputs::AbstractArray{T,2}) where T
     # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
     batched_mul(m.wte.weight', x)
 end
+Flux.trainable(m::GPT2) = (wte=m.wte, wpe=m.wpe, blocks=m.blocks, ln_f=m.ln_f)
 
 # testing
 # gpt2 = GPT2(200, 128, 8, 2, 100)
