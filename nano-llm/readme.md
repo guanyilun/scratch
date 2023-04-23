@@ -19,8 +19,11 @@ Ideas for the second attempt
 - [x] able to work with new weights
 - [x] generate correct output
 - [x] running model on gpu
-- [ ] training test
+It doesn't look like I can get training working with this version. I will
+work on training in attempt 3
 
 ## Attempt 3
+Ideas
 - [ ] batched input
-- [ ] robust training on given corpus
+- [ ] use batch_mul
+- [ ] robust training

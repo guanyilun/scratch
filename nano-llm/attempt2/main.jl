@@ -1,6 +1,15 @@
 include("lib.jl")
 include("utils.jl")
 
+function generate(gpt2, inputs; n_tokens_to_generate=1)
+    for _ in 1:n_tokens_to_generate # auto-regressive decode loop
+        logits = gpt2(inputs) # model forward pass
+        next_id = argmax(logits[:,end]) # greedy sampling
+        push!(inputs, next_id) # append prediction to input
+    end
+    return inputs[(length(inputs)-n_tokens_to_generate)+1:end] # only return generated ids
+end
+
 models_dir = "gpt2_124m"
 
 # load encoder, hparams, and params from the released open-ai gpt-2 files
