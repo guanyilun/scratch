@@ -97,12 +97,14 @@ function (m::GPT2)(inputs::AbstractArray{T,2}) where T
     # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
     batched_mul(m.wte.weight', x)
 end
-gpt2 = GPT2(200, 128, 8, 2, 100)
-inputs = reshape(collect(1:12), (3, 4))
-x = gpt2.wte.weight[:, inputs] .+ gpt2.wpe.weight[:, collect(1:size(inputs, 1))]
-x_new = Chain(gpt2.blocks..., gpt2.ln_f)(x)
-batched_mul(gpt2.wte.weight', x_new)
-gpt2(inputs)
+
+# testing
+# gpt2 = GPT2(200, 128, 8, 2, 100)
+# inputs = reshape(collect(1:12), (3, 4))
+# x = gpt2.wte.weight[:, inputs] .+ gpt2.wpe.weight[:, collect(1:size(inputs, 1))]
+# x_new = Chain(gpt2.blocks..., gpt2.ln_f)(x)
+# batched_mul(gpt2.wte.weight', x_new)
+# gpt2(inputs)
 
 make_mask(x::AbstractArray; dims::Integer) = (one(eltype(x)) .- make_causal_mask(x, dims=dims)) .* eltype(x)(-1e10) 
-@non_differentiable make_causal_mask(::Any...)
+@non_differentiable make_mask(::Any...)
