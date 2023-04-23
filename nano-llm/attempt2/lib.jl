@@ -10,7 +10,6 @@ struct LN
     ϵ
     dims
 end
-@Flux.functor LN (γ, β)
 function (m::LN)(x)
     μ = mean(x, dims=m.dims)
     σ² = var(x, dims=m.dims)
@@ -22,13 +21,17 @@ end
 function LN(n::Integer)
     LN(Flux.glorot_uniform(n), zeros(n))
 end
+@Flux.functor LN
+Flux.trainable(m::LN) = (m.γ, m.β)
+
 
 struct FFN
     fc
     proj
 end
-@Flux.functor FFN
 (m::FFN)(x) = Chain(m.fc, gelu, m.proj)(x)
+@Flux.functor FFN
+Flux.trainable(m::FFN) = (m.fc, m.proj) # optional
 
 function self_attn(q, k, v, mask) # [n_interim, n_seq] -> [n_seq, n_seq] x [n_seq, n_interim] -> [n_seq, n_interim]
     attention = k' * q ./ eltype(q)(sqrt(size(q, 1)))
@@ -42,9 +45,7 @@ struct MHA
     proj
     n_head
 end
-@Flux.functor MHA (attn, proj)  # n_head is not a trainable parameter
-
-function (m::MHA)(x)
+function (m::MHA)(x::AbstractArray{T,2}) where T
     n_embed, n_seq = size(x)
     n_interim = n_embed ÷ m.n_head
 
@@ -65,7 +66,9 @@ function (m::MHA)(x)
     v = permutedims(v,(1,3,2)) # [n_interim, n_head, n_seq] -> [n_interim, n_seq, n_head]
 
     # causal mask to hide future inputs from being attended to
-    causal_mask = Float32.((1 .- triu!(fill(1, (n_seq, n_seq)))) * -1e10) # [n_seq, n_seq]
+    # both methods work, first one comes from NNlib
+    causal_mask = (one(T) .- make_causal_mask(q, dims=2)) .* T(-1e10)
+    # causal_mask = (one(T) .- triu(fill!(similar(q, Bool, (n_seq, n_seq)), true))) * T(-1e10) # [n_seq, n_seq]
 
     heads = []
     for i in 1:m.n_head
@@ -74,6 +77,8 @@ function (m::MHA)(x)
 
     cat(heads..., dims=1) |> m.proj
 end
+@Flux.functor MHA
+Flux.trainable(m::MHA) = (m.attn, m.proj)
 
 struct TransformerDecoderBlock
     mha
@@ -81,12 +86,13 @@ struct TransformerDecoderBlock
     ln1
     ln2
 end
-@Flux.functor TransformerDecoderBlock
 function (m::TransformerDecoderBlock)(x)
     x .+= m.mha(m.ln1(x))
     x .+= m.mlp(m.ln2(x))
     x
 end
+@Flux.functor TransformerDecoderBlock
+Flux.trainable(m::TransformerDecoderBlock) = (m.mha, m.mlp, m.ln1, m.ln2) # optional
 
 struct GPT2 # GPT2 model
     wte
@@ -94,7 +100,6 @@ struct GPT2 # GPT2 model
     blocks
     ln_f
 end
-@Flux.functor GPT2
 function (m::GPT2)(inputs)
     # token + positional embeddings
     x = m.wte.weight[:,inputs] .+ m.wpe.weight[:,collect(1:length(inputs))] # [n_seq] -> [n_embed, n_seq]
@@ -103,6 +108,8 @@ function (m::GPT2)(inputs)
     # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
     m.wte.weight' * x
 end
+@Flux.functor GPT2
+Flux.trainable(m::GPT2) = (m.wte, m.wpe, m.blocks, m.ln_f)  # optional
 
 struct GPT2Config
     vocab_size::Int
@@ -135,6 +142,7 @@ function GPT2(config::GPT2Config)
 
     GPT2(wte, wpe, blocks, LayerNorm(config.n_embed))
 end
+
 
 function generate(gpt2, inputs; n_tokens_to_generate=1)
     for _ in 1:n_tokens_to_generate # auto-regressive decode loop
