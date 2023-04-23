@@ -27,4 +27,9 @@ Ideas
 - [X] batched input
 - [X] use batch_mul
 - [X] get gradient working
-- [ ] robust training
+- [X] data loaders
+- [X] basic training
+- [X] wandb integration
+Somehow uses a huge amount of memory, need to investigate further.
+Try more robust dataloading, DataLoader.jl, MLUtils have some useful.
+Sometimes training break with obscure reasons, need to investigate
