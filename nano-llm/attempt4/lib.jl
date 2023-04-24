@@ -67,7 +67,12 @@ end
 FFN(n_embed::Integer) = FFN(Dense(n_embed, 3*n_embed), Dense(3*n_embed, n_embed))
 (m::FFN)(x) = Chain(m.fc, gelu, m.proj)(x)
 @Flux.functor FFN
-Flux.trainable(m::FFN) = (fc=m.fc, proj=m.proj)
+
+struct Residual
+    chain
+end
+(m::Residual)(x) = x + m.chain(x)
+@Flux.functor Residual
 
 struct TransformerDecoderBlock
     mha
@@ -76,30 +81,25 @@ struct TransformerDecoderBlock
     ln2
 end
 TransformerDecoderBlock(n_embed::Integer, n_head::Integer) = TransformerDecoderBlock(MHA(n_embed, n_head), FFN(n_embed), LN(n_embed), LN(n_embed))
-function (m::TransformerDecoderBlock)(x)
-    x = x + Chain(m.ln1, m.mha)(x)
-    x = x + Chain(m.ln2, m.mlp)(x)
-    x
-end
+(m::TransformerDecoderBlock)(x) = Chain(Residual(Chain(m.ln1, m.mha)), Residual(Chain(m.ln2, m.mlp)))(x)
 @Flux.functor TransformerDecoderBlock
-Flux.trainable(m::TransformerDecoderBlock) = (mha=m.mha, mlp=m.mlp, ln1=m.ln1, ln2=m.ln2)
 
-struct GPT2
+struct EmbedTokens
     wte
     wpe
+end
+EmbedTokens(n_vocab::Integer, n_embed::Integer, ctx_len::Integer) = EmbedTokens(Embedding(n_vocab, n_embed), Embedding(ctx_len, n_embed; init=init_position_embedding))
+(m::EmbedTokens)(x) = m.wte(x) .+ m.wpe(collect(1:size(x,1)))
+@Flux.functor EmbedTokens
+
+struct GPT2
+    embedding
     blocks
     ln_f
 end
-GPT2(n_vocab::Integer, n_embed::Integer, n_head::Integer, n_layer::Integer, ctx_len::Integer) = GPT2(Embedding(n_vocab, n_embed), Embedding(ctx_len, n_embed; init=init_position_embedding), [TransformerDecoderBlock(n_embed, n_head) for _ in 1:n_layer], LN(n_embed))
+GPT2(n_vocab::Integer, n_embed::Integer, n_head::Integer, n_layer::Integer, ctx_len::Integer) = GPT2(EmbedTokens(n_vocab, n_embed, ctx_len), [TransformerDecoderBlock(n_embed, n_head) for _ in 1:n_layer], LN(n_embed))
+(m::GPT2)(inputs) = Chain(m.embedding, m.blocks..., m.ln_f, x->batched_mul(m.embedding.wte.weight', x))(inputs)
 @Flux.functor GPT2
-function (m::GPT2)(inputs::AbstractArray{T,2}) where T
-    # token + positional embeddings
-    x = m.wte(inputs) .+ m.wpe(collect(1:size(inputs,1))) # [n_seq] -> [n_embed, n_seq]
-    x = Chain(m.blocks..., m.ln_f)(x) # [n_embed, n_seq]
-    # [n_embed, n_vocab]' x [n_embed, n_seq] -> [n_vocab, n_seq]
-    batched_mul(m.wte.weight', x)
-end
-Flux.trainable(m::GPT2) = (wte=m.wte, wpe=m.wpe, blocks=m.blocks, ln_f=m.ln_f)
 
 make_mask(x::AbstractArray; dims::Integer) = (one(eltype(x)) .- make_causal_mask(x, dims=dims)) .* eltype(x)(-1e10) 
 @non_differentiable make_mask(::Any...)
@@ -109,8 +109,8 @@ function init_position_embedding(n_embed, n_seq)  # out, in = n_embed, n_seq, or
     position = reshape(collect(1:n_seq), 1, :)
     idiv_1 = exp.((collect(1:2:n_embed) .- 1) * (-log(10000.0)) / n_embed)
     idiv_2 = exp.((collect(2:2:n_embed) .- 1) * (-log(10000.0)) / n_embed)
-    pe[1:2:end,:] .= sin.(position .* idiv_1)
-    pe[2:2:end,:] .= cos.(position .* idiv_2)
+    pe[1:2:end, :] .= sin.(position .* idiv_1)
+    pe[2:2:end, :] .= cos.(position .* idiv_2)
     pe
 end
 

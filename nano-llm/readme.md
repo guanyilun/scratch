@@ -31,5 +31,12 @@ Ideas
 - [X] basic training
 - [X] wandb integration
 - [X] longer period training on gpu seems fine too, the memory usage is a bit abnormally high, need to investigate
-- [ ] checkpointing
 Try more robust dataloading, DataLoader.jl, MLUtils have some useful.
+
+## Attempt 4
+Ideas
+- [X] experiment with chains
+- [X] position embedding
+- [X] checkpointing
+- [ ] multiple gpus
+- [ ] multiple modes

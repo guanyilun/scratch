@@ -5,9 +5,9 @@ using Random
 function jsonl_reader(file::AbstractString; text_key::AbstractString="text")
     ch = Channel{String}(0)
     task = @async begin
-      open(file) do f
-        foreach(x->put!(ch, JSON.parse(x)[text_key]), eachline(f))
-      end
+        open(file) do f
+            foreach(x->put!(ch, JSON.parse(x)[text_key]), eachline(f))
+        end
     end
     bind(ch, task)
     ch
@@ -51,12 +51,15 @@ function batch_sampler(ch::Channel, splitter::TextSplitter; batch_size::Int=8, b
                 if length(batch) == batch_size
                     min_size = minimum(length.(batch))
                     if min_size < min_block_size
+                        # discard bad batch
+                        empty!(batch)
                         break
+                    else
+                        x = hcat(map(x->x[1:min_size-1], batch)...) .+1
+                        y = hcat(map(x->x[2:min_size], batch)...) .+1
+                        put!(out_ch, (x, y))
+                        empty!(batch)
                     end
-                    x = hcat(map(x->x[1:min_size-1], batch)...) .+1
-                    y = hcat(map(x->x[2:min_size], batch)...) .+1
-                    put!(out_ch, (x, y))
-                    batch = []
                 end
             end
         end
