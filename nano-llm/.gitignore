@@ -1,3 +1,4 @@
 gpt2_124m
 wandb
-data.jsonl
+*.bson
+*.jsonl

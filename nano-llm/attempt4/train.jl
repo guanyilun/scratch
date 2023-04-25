@@ -1,6 +1,6 @@
 include("lib.jl")
 include("data.jl")
-include("utils.jl")
+include("train_utils.jl")
 
 using Flux.Losses
 using OneHotArrays
@@ -52,6 +52,7 @@ else
 end
 
 training_config = (
+    batch_size = 8,
     log_per_nbatch = 10,
     save_per_nbatch = 10000,
 )
@@ -62,7 +63,7 @@ model = GPT2(n_vocab, n_embed, n_head, n_layer, ctx_len) |> device
 opt_state = Flux.setup(Adam(get_config(lg, "learning_rate")), model)
 
 for epoch in 1:get_config(lg, "epochs")
-    batches = jsonl_reader(data_file) |> ch->batch_sampler(ch, ts)
+    batches = jsonl_reader(data_file) |> ch->batch_sampler(ch, ts; batch_size=training_config.batch_size)
     i_batch = 1
     for (x, y) in batches
         x = x |> device

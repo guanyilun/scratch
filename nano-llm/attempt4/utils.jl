@@ -64,8 +64,3 @@ function gpt2_from_tf_ckpt(tf_checkpoint_path)
     embedding = EmbedTokens(wte, wpe)
     GPT2(embedding, blocks, ln_f)
 end
-
-function save_model(model, path)
-    model_cpu = model |> cpu
-    @save path model_cpu
-end

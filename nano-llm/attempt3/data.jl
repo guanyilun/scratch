@@ -6,11 +6,28 @@ function jsonl_reader(file::AbstractString; text_key::AbstractString="text")
     ch = Channel{String}(0)
     task = @async begin
         open(file) do f
-            foreach(x->put!(ch, JSON.parse(x)[text_key]), eachline(f))
+            for l in eachline(f)
+                JSON.parse(l)[text_key] |> clean_text |> x->put!(ch, x)
+            end
         end
     end
     bind(ch, task)
     ch
+end
+
+function clean_text(text::AbstractString)
+    text = replace(text,
+        r"\s+" => " ",
+        r"\n" => "",
+        r"\\cite[a-z]*\{[^\}]*\}" => "",
+        r"\\label\{[^\}]*\}" => "",
+        r"\\ref\{[^\}]*\}" => "",
+        r"\\begin\{figure\*?\}[^\}]*\\end\{figure\*?\}" => "",
+        r"\\section[\*]?\{[^\}]*\}" => "",
+        r"\\subsection[\*]?\{[^\}]*\}" => "",
+        r"\\subsubsection[\*]?\{[^\}]*\}" => "",
+        r"~" => " ",
+    ) |> strip
 end
 
 struct TextSplitter
