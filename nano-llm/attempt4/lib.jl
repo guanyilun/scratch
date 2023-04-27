@@ -33,8 +33,7 @@ function (m::MHA)(x::AbstractArray{T,3}) where T
 
     # qkv projection
     qkv = m.attn(x) # [n_embed, n_seq, n_batch] -> [3*n_embed, n_seq, n_batch]
-    q, k, v = chunk(qkv, 3, dims=1) # [n_embed, n_seq, n_batch] -> [n_embed, n_seq, n_batch] x 3
-
+    q, k, v = chunk(qkv, 3, dims=1) # [n_embed*3, n_seq, n_batch] -> [n_embed, n_seq, n_batch] x 3
     @assert size(q) == size(k) == size(v) == (n_embed, n_seq, n_batch)
 
     # split into heads
@@ -81,7 +80,13 @@ struct TransformerDecoderBlock
     ln2
 end
 TransformerDecoderBlock(n_embed::Integer, n_head::Integer) = TransformerDecoderBlock(MHA(n_embed, n_head), FFN(n_embed), LN(n_embed), LN(n_embed))
-(m::TransformerDecoderBlock)(x) = Chain(Residual(Chain(m.ln1, m.mha)), Residual(Chain(m.ln2, m.mlp)))(x)
+# (m::TransformerDecoderBlock)(x) = Chain(Residual(Chain(m.ln1, m.mha)), Residual(Chain(m.ln2, m.mlp)))(x)
+# for debugging
+(m::TransformerDecoderBlock)(x) = begin
+    x = x + m.mha(m.ln1(x))
+    x = x + m.mlp(m.ln2(x))
+    x
+end
 @Flux.functor TransformerDecoderBlock
 
 struct EmbedTokens
@@ -101,7 +106,8 @@ GPT2(n_vocab::Integer, n_embed::Integer, n_head::Integer, n_layer::Integer, ctx_
 (m::GPT2)(inputs) = Chain(m.embedding, m.blocks..., m.ln_f, x->batched_mul(m.embedding.wte.weight', x))(inputs)
 @Flux.functor GPT2
 
-make_mask(x::AbstractArray; dims::Integer) = (one(eltype(x)) .- make_causal_mask(x, dims=dims)) .* eltype(x)(-1e10) 
+# make_mask(x::AbstractArray; dims::Integer) = (one(eltype(x)) .- make_causal_mask(x, dims=dims)) .* eltype(x)(-1e10)  # -1e10 doesn't work for f16
+make_mask(x::AbstractArray; dims::Integer) = (one(eltype(x)) .- make_causal_mask(x, dims=dims)) .* eltype(x)(-1e4)  # -1e4 work for f16
 @non_differentiable make_mask(::Any...)
 
 function init_position_embedding(n_embed, n_seq)  # out, in = n_embed, n_seq, or Dense(in, out)
@@ -113,6 +119,33 @@ function init_position_embedding(n_embed, n_seq)  # out, in = n_embed, n_seq, or
     pe[2:2:end, :] .= cos.(position .* idiv_2)
     pe
 end
+
+struct OPT
+    wte
+    wpe
+    blocks
+    ln_f
+    lm_head
+end
+OPT(
+    n_vocab::Integer,
+    n_embed::Integer,
+    n_head::Integer,
+    n_layer::Integer,
+    ctx_len::Integer
+) = OPT(
+    Embedding(n_vocab, n_embed),
+    Enbedding(ctx_len, n_embed),
+    [TransformerDecoderBlock(n_embed, n_head) for _ in 1:n_layer],
+    LN(n_embed),
+    Embedding(n_vocab, n_embed)
+)
+function (m::OPT)(inputs)
+    offset = 2
+    x = m.wte(inputs) .+ m.wpe(collect(1:size(inputs,1)) .+ offset)
+    Chain(m.blocks..., m.ln_f, x->batched_mul(m.lm_head.weight', x))(x)
+end
+@Flux.functor OPT
 
 # testing
 # gpt2 = GPT2(200, 128, 8, 2, 100)
