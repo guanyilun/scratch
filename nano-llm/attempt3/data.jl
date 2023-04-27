@@ -2,11 +2,12 @@ using JSON
 using PyCall
 using Random
 
-function jsonl_reader(file::AbstractString; text_key::AbstractString="text")
+function jsonl_reader(file::AbstractString; text_key::AbstractString="text", skip_first=0)
     ch = Channel{String}(0)
     task = @async begin
         open(file) do f
-            for l in eachline(f)
+            for (i,l) in enumerate(eachline(f))
+                (i < skip_first) && continue
                 JSON.parse(l)[text_key] |> clean_text |> x->put!(ch, x)
             end
         end
