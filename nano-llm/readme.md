@@ -38,5 +38,9 @@ Ideas
 - [X] experiment with chains
 - [X] position embedding
 - [X] checkpointing
-- [ ] multiple gpus
-- [ ] multiple modes
+- [X] multiple gpus (using distributed)
+- [X] data streaming to multiple gpus
+- [ ] multiple gpus (using mpi)
+- [X] tested galactica / opt causaul model
+- [X] tested tuning
+- [ ] dropout support for training

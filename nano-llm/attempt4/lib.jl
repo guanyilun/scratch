@@ -127,22 +127,16 @@ struct OPT
     ln_f
     lm_head
 end
-OPT(
-    n_vocab::Integer,
-    n_embed::Integer,
-    n_head::Integer,
-    n_layer::Integer,
-    ctx_len::Integer
-) = OPT(
+OPT(;n_vocab::Integer, n_embed::Integer, n_head::Integer, n_layer::Integer, ctx_len::Integer) = OPT(
     Embedding(n_vocab, n_embed),
-    Enbedding(ctx_len, n_embed),
+    Enbedding(ctx_len+2, n_embed),
     [TransformerDecoderBlock(n_embed, n_head) for _ in 1:n_layer],
     LN(n_embed),
     Embedding(n_vocab, n_embed)
 )
 function (m::OPT)(inputs)
-    offset = 2
-    x = m.wte(inputs) .+ m.wpe(collect(1:size(inputs,1)) .+ offset)
+    # offset (=2) from transformer -> OPTLearnedPositionalEmbedding
+    x = m.wte(inputs) .+ m.wpe(collect(1:size(inputs,1)) .+ 2)
     Chain(m.blocks..., m.ln_f, x->batched_mul(m.lm_head.weight', x))(x)
 end
 @Flux.functor OPT
