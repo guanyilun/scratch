@@ -44,3 +44,8 @@ Ideas
 - [X] tested galactica / opt causaul model
 - [X] tested tuning
 - [ ] dropout support for training
+- [X] tested rwkv model implementation
+
+## Attempt 5
+Ideas
+- slightly more professional rwkv implementation
