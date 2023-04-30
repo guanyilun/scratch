@@ -100,14 +100,15 @@ function get_tokenizer()
     py"tokenizer"
 end
 
-function sample_logits(logits; temperature=1.0, top_p=0.9)
+function sample_logits(logits; temperature=1.0, top_p=0.9, use_argmax=false)
+    if use_argmax
+        return argmax(logits)
+    end
     probs = softmax(logits; dims=1)
     sorted_probs = sort(probs; rev=true)
     cum_probs = cumsum(sorted_probs)
     cutoff = sorted_probs[argmax(cum_probs .> top_p)]
-    probs = map(probs) do p
-        p > cutoff ? p : 0
-    end
+    probs = (probs .> cutoff) .* probs
     if temperature != 1.0
         probs .^= 1/temperature
     end

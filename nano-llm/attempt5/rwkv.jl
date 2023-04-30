@@ -1,11 +1,25 @@
 using Flux
 using MLUtils: batch, zeros_like
-using NNlib: batched_mul
+using NNlibCUDA: batched_mul, softmax, sigmoid
+using Statistics
 
 include("common.jl")
 
 time_mix(x, x_prev, mix) = @. x * mix + x_prev * (1 - mix)
 square_relu(x::AbstractFloat) = max(0, x)^2
+function exp_mix(v1::AbstractArray{T}, v2::AbstractArray{T}, p1::AbstractArray{T}, p2::AbstractArray{T}) where T
+    p = max.(p1, p2)
+    (@. exp(p1 - p) * v1 + exp(p2 - p) * v2, p)
+end
+
+"""
+Collectively rescale `v1` and `v2` to better dynamic range
+"""
+function exp_selfadj(v1, v2, p)
+    p_new = @. max(min(abs(asinh(v1)), p), min(abs(asinh(v2)), p))
+    factor = @. exp(p - p_new)
+    @. (v1*factor, v2*factor, p_new)
+end
 
 mutable struct State
     x_tm  # token mixing
@@ -17,14 +31,17 @@ end
 
 State(n_embed::Integer, n_layer::Integer) = begin
     dim = (n_embed, n_layer)
-    # State(zeros(Float32, dim), zeros(Float32, dim), zeros(Float32, dim), zeros(Float32, dim))
     State(zeros(Float32, dim), zeros(Float32, dim), zeros(Float32, dim), zeros(Float32, dim), zeros(Float32, dim))
 end
+@Flux.functor State
 
-function recur_step(a::Vector, b::Vector; expw)
-    expkv_prev, expk_prev = a
-    expkv, expk = b 
-    @. [expw*expkv_prev + expkv, expw*expk_prev + expk]
+function recur_step(left::Vector, right::Vector; w)
+    a_prev, b_prev, p_prev = left
+    expkv, expk, p = right
+    a_new, p_new = exp_mix(a_prev, expkv, p_prev .+ w, p)
+    b_new, _ = exp_mix(b_prev, expk, p_prev .+ w, p)
+
+    [a_new, b_new, p_new]
 end
 
 struct TokenMixing{T}
@@ -35,7 +52,6 @@ struct TokenMixing{T}
     k_proj
     v_proj
     out_proj 
-    # rescale::AbstractArray{T, 1}  # <-- (e^w e^u - 1)
     time_first::AbstractArray{T, 1}
     time_decay::AbstractArray{T, 1}  # <-- w
 end
@@ -50,7 +66,6 @@ TokenMixing(n_embed::Integer) = TokenMixing(
     Dense(n_embed, n_embed, bias=false), # k_proj
     Dense(n_embed, n_embed, bias=false), # v_proj
     Dense(n_embed, n_embed, bias=false), # out_proj
-    # zeros(Float32, n_embed), # rescale
     zeros(Float32, n_embed), # time first
     ones(Float32, n_embed),  # time_decay
 )
@@ -67,26 +82,33 @@ function (m::TokenMixing)(x::AbstractArray{T,1}, state::State; i) where T
     k = m.k_proj(xₖ)
     v = m.v_proj(xᵥ)
 
-    expk = @. exp(k)
-    expkv = @. expk * v
+    p = k
+    expk = k.*0 .+ 1
+    expkv = v
 
-    a_prev, b_prev = @views(state.a[:, i]), @views(state.b[:, i])
-    a, b = recur_step([a_prev, b_prev], [expkv, expk]; expw=exp.(m.time_decay))
+    a_prev, b_prev, p_prev = @views(state.a[:, i]), @views(state.b[:, i]), @views(state.p[:, i])
+
+    c, _ = exp_mix(a_prev, expkv, p_prev, m.time_first .+ p)
+    d, _ = exp_mix(b_prev, expk, p_prev, m.time_first .+ p)
+
+    rwkv = @. r * c / d
+    rwkv = m.out_proj(rwkv)
 
     # update state
+    a, b, p = recur_step([a_prev, b_prev, p_prev], [expkv, expk, p]; w=m.time_decay)
     @views state.a[:, i] .= a
     @views state.b[:, i] .= b
+    @views state.p[:, i] .= p
     @views state.x_tm[:, i] .= x
 
-    rwkv = @. r * (a_prev + exp(m.time_first)*expkv) / (b_prev + exp(m.time_first)*expk)
-
-    m.out_proj(rwkv), state
+    rwkv, state
 end
 
 function (m::TokenMixing)(x::AbstractArray{T,2}, state::State; i) where T
     n_embed, n_seq = size(x)
 
     x_prev = hcat(@views(state.x_tm[:, i]), @views(x[:, 1:end-1]))
+
     xₖ = time_mix(x, x_prev, m.Tₖ)
     xᵥ = time_mix(x, x_prev, m.Tᵥ)
     xᵣ = time_mix(x, x_prev, m.Tᵣ)
@@ -95,23 +117,28 @@ function (m::TokenMixing)(x::AbstractArray{T,2}, state::State; i) where T
     k = m.k_proj(xₖ)
     v = m.v_proj(xᵥ)
 
-    expk = @. exp(k)
-    expkv = @. expk * v
+    p = k
+    expk = k.*0 .+ 1
+    expkv = v
 
-    step_f = (a, b) -> recur_step(a, b; expw=exp.(m.time_decay))
-    substrate = [[@views(expkv[:,i]), @views(expk[:,i])] for i = 1:n_seq]
-    ab = accumulate(step_f, substrate)  # |> batch
+    step_f = (a, b) -> recur_step(a, b; w=m.time_decay)
+    a_prev, b_prev, p_prev = @views(state.a[:, i]), @views(state.b[:, i]), @views(state.p[:, i])
+    substrate = [[@views(expkv[:,i]), @views(expk[:,i]), @views(p[:,i])] for i = 1:n_seq]
+    abp = accumulate(step_f, substrate; init=[a_prev, b_prev, p_prev])
+
+    a_prev = batch([a_prev, [abp[i][1] for i = 1:n_seq-1]...])
+    b_prev = batch([b_prev, [abp[i][2] for i = 1:n_seq-1]...])
+    p_prev = batch([p_prev, [abp[i][3] for i = 1:n_seq-1]...])
+
+    c, _ = exp_mix(a_prev, expkv, p_prev, p .+ m.time_first)
+    d, _ = exp_mix(b_prev, expk,  p_prev, p .+ m.time_first)
+    rwkv = @. r * c / d
 
     # update state
     @views state.x_tm[:, i] .= x[:, end]
-    @views state.a[:, i] .= ab[end][1]
-    @views state.b[:, i] .= ab[end][2]
-
-    a = [zeros_like(ab[1][1]);; [ab[i][1] for i = 1:n_seq-1]...]
-    b = [zeros_like(ab[2][1]);; [ab[i][2] for i = 1:n_seq-1]...]
-    rwkv = map(1:n_seq) do i
-        @views @. r[:, i] * (a[:, i] + exp(m.time_first)*expkv[:, i]) / (b[:, i] + exp(m.time_first)*expk[:, i])
-    end |> batch
+    @views state.a[:, i] .= abp[end][1]
+    @views state.b[:, i] .= abp[end][2]
+    @views state.p[:, i] .= abp[end][3]
 
     m.out_proj(rwkv), state
 end
@@ -143,7 +170,7 @@ function (m::ChannelMixing)(x::AbstractArray{T, 1}, state::State; i) where T
     k = m.k_proj(xₖ) .|> square_relu
 
     # update state
-    @views state.x_cm[:, i] .= x[:, end]
+    @views state.x_cm[:, i] .= x
 
     r .* (m.v_proj(k)), state
 end
