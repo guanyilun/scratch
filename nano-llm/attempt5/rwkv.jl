@@ -1,12 +1,12 @@
 using Flux
 using MLUtils: batch, zeros_like
-using NNlibCUDA: batched_mul, softmax, sigmoid
+using NNlibCUDA: batched_mul, softmax, sigmoid, pad_zeros
 using Statistics
 
 include("common.jl")
 
 time_mix(x, x_prev, mix) = @. x * mix + x_prev * (1 - mix)
-square_relu(x::AbstractFloat) = max(0, x)^2
+square_relu(x::T) where T = max(zero(T), x)^2
 function exp_mix(v1::AbstractArray{T}, v2::AbstractArray{T}, p1::AbstractArray{T}, p2::AbstractArray{T}) where T
     p = max.(p1, p2)
     (@. exp(p1 - p) * v1 + exp(p2 - p) * v2, p)
@@ -143,6 +143,42 @@ function (m::TokenMixing)(x::AbstractArray{T,2}, state::State; i) where T
     m.out_proj(rwkv), state
 end
     
+# stateless for training
+function (m::TokenMixing)(x::AbstractArray{T,3}) where T
+    n_embed, n_seq, n_batch = size(x)
+    x = permutedims(x, (1,3,2))
+
+    @views x_prev = pad_zeros(x, (0,0,0,0,1,0))[:, :, 1:end-1]
+
+    xₖ = time_mix(x, x_prev, m.Tₖ)
+    xᵥ = time_mix(x, x_prev, m.Tᵥ)
+    xᵣ = time_mix(x, x_prev, m.Tᵣ)
+
+    r = m.r_proj(xᵣ) .|> sigmoid
+    k = m.k_proj(xₖ)
+    v = m.v_proj(xᵥ)
+
+    p = k
+    expk = zeros_like(k) .+ 1
+    expkv = v
+
+    step_f = (a, b) -> recur_step(a, b; w=m.time_decay)
+    a_prev = b_prev = p_prev = zeros_like(k, eltype(v), (n_embed, n_batch))
+    substrate = @views [[expkv[:,:,i], expk[:,:,i], p[:,:,i]] for i = 1:n_seq]
+    abp = accumulate(step_f, substrate; init=[a_prev, b_prev, p_prev])
+
+    a_prev = batch([a_prev, [abp[i][1] for i = 1:n_seq-1]...])
+    b_prev = batch([b_prev, [abp[i][2] for i = 1:n_seq-1]...])
+    p_prev = batch([p_prev, [abp[i][3] for i = 1:n_seq-1]...])
+
+    c, _ = exp_mix(a_prev, expkv, p_prev, p .+ m.time_first)
+    d, _ = exp_mix(b_prev, expk,  p_prev, p .+ m.time_first)
+    rwkv = @. r * c / d
+
+    rwkv = permutedims(rwkv, (1,3,2))
+    m.out_proj(rwkv)
+end
+
 struct ChannelMixing{T}
     Tₖ::AbstractArray{T, 1}  # will be taken out in the future
     Tᵣ::AbstractArray{T, 1}  # will be taken out in the future
@@ -194,6 +230,23 @@ function (m::ChannelMixing)(x::AbstractArray{T, 2}, state::State; i) where T
     r .* (m.v_proj(k)), state
 end
 
+# stateless for training purpose
+function (m::ChannelMixing)(x::AbstractArray{T, 3}) where T
+    n_embed, n_seq, n_batch = size(x)
+
+    x_prev = zeros_like(x, eltype(x), (n_embed, 1, n_batch))
+    if size(x, 2) > 1
+        x_prev = hcat(x_prev, @views(x[:, 1:end-1, :]))
+    end
+    xₖ = time_mix(x, x_prev, m.Tₖ)
+    xᵣ = time_mix(x, x_prev, m.Tᵣ)
+
+    r = m.r_proj(xᵣ) .|> sigmoid
+    k = m.k_proj(xₖ) .|> square_relu
+
+    r .* (m.v_proj(k))
+end
+
 struct Block
     ln1
     token_mixing
@@ -210,12 +263,20 @@ Block(n_embed::Integer) = Block(
     ChannelMixing(n_embed),
 )
 
-function (m::Block)(x, state; i)
+function (m::Block)(x, state::State; i)
     xp, state = m.token_mixing(m.ln1(x), state; i=i)
     x = x + xp
     xp, state = m.channel_mixing(m.ln2(x), state; i=i)
     x = x + xp 
     x, state
+end
+
+function (m::Block)(x)
+    xp = m.token_mixing(m.ln1(x))
+    x = x + xp
+    xp = m.channel_mixing(m.ln2(x))
+    x = x + xp
+    x
 end
 
 struct RWKV
@@ -248,4 +309,17 @@ RWKV(n_embed::Integer, n_blocks::Integer, n_vocab::Integer) = RWKV(
     x = m.lm_head.weight' * x
 
     x, state
+end
+
+# stateless for training purpose
+(m::RWKV)(x::AbstractArray{T, 2}) where T = begin
+    x = m.embedding(x)
+    x = m.ln_init(x)
+    for i in 1:length(m.blocks)
+        x = m.blocks[i](x)
+    end
+    x = m.ln_final(x)
+
+    # x: [n_embed, n_seq]
+    batched_mul(m.lm_head.weight', x)
 end
