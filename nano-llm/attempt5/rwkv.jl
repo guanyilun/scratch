@@ -40,7 +40,6 @@ function recur_step(left::Vector, right::Vector; w)
     expkv, expk, p = right
     a_new, p_new = exp_mix(a_prev, expkv, p_prev .+ w, p)
     b_new, _ = exp_mix(b_prev, expk, p_prev .+ w, p)
-
     [a_new, b_new, p_new]
 end
 
@@ -145,8 +144,7 @@ end
     
 # stateless for training
 function (m::TokenMixing)(x::AbstractArray{T,3}) where T
-    n_embed, n_seq, n_batch = size(x)
-    x = permutedims(x, (1,3,2))
+    n_embed, n_batch, n_seq = size(x)
 
     @views x_prev = pad_zeros(x, (0,0,0,0,1,0))[:, :, 1:end-1]
 
@@ -175,7 +173,6 @@ function (m::TokenMixing)(x::AbstractArray{T,3}) where T
     d, _ = exp_mix(b_prev, expk,  p_prev, p .+ m.time_first)
     rwkv = @. r * c / d
 
-    rwkv = permutedims(rwkv, (1,3,2))
     m.out_proj(rwkv)
 end
 
@@ -232,12 +229,9 @@ end
 
 # stateless for training purpose
 function (m::ChannelMixing)(x::AbstractArray{T, 3}) where T
-    n_embed, n_seq, n_batch = size(x)
+    n_embed, n_batch, n_seq = size(x)
+    @views x_prev = pad_zeros(x, (0,0,0,0,1,0))[:, :, 1:end-1]
 
-    x_prev = zeros_like(x, eltype(x), (n_embed, 1, n_batch))
-    if size(x, 2) > 1
-        x_prev = hcat(x_prev, @views(x[:, 1:end-1, :]))
-    end
     xₖ = time_mix(x, x_prev, m.Tₖ)
     xᵣ = time_mix(x, x_prev, m.Tᵣ)
 
@@ -314,12 +308,13 @@ end
 # stateless for training purpose
 (m::RWKV)(x::AbstractArray{T, 2}) where T = begin
     x = m.embedding(x)
+    x = permutedims(x, (1, 3, 2))
     x = m.ln_init(x)
     for i in 1:length(m.blocks)
         x = m.blocks[i](x)
     end
     x = m.ln_final(x)
-
+    x = permutedims(x, (1, 3, 2))
     # x: [n_embed, n_seq]
     batched_mul(m.lm_head.weight', x)
 end
