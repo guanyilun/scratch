@@ -64,3 +64,18 @@ def rnn_generate(model, weights_tree, prompt, n_tokens=50, tokenizer=None, state
         res += out_token
         input_ids.append(out_id)
     return res
+
+def rnn_generate_batch_stateless(model, weights_tree, prompt, n_tokens=10, tokenizer=None):
+    if tokenizer is None:
+        tokenizer = get_tokenizer()
+    input_ids = tokenizer.encode(prompt).ids
+    print(prompt, end='')
+    for _ in range(n_tokens):
+        input_ids_batch = np.array(input_ids).reshape(1, -1)
+        out = model(input_ids_batch, **weights_tree)
+        out_id = np.argmax(out[-1, 0, :])
+        res = tokenizer.decode([out_id])
+        print(res, end='')
+        input_ids.pop(0)  # jit becomes very slow when shape changes
+        input_ids.append(out_id)
+    print()

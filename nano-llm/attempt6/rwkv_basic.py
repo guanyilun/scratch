@@ -44,7 +44,6 @@ def channel_mixing(x, x_prev, time_mix_r, time_mix_k, r_proj, k_proj, v_proj):
     k = np.square(relu(k_proj @ x_k))
     return r * (v_proj @ k)
 
-
 @jit
 def rwkv_net(token, state, emb, blocks, ln_out, head):
     x = emb['weight'][token]
@@ -55,8 +54,7 @@ def rwkv_net(token, state, emb, blocks, ln_out, head):
 
     for i in range(len(blocks)):
         x_tm = layer_norm(x, **blocks[i]['ln1'])
-        x_p, a_state, b_state, p_state = token_mixing(x_tm, state[i, 1], state[i, 2],
-                                                      state[i, 3], state[i, 4], **blocks[i]['att'])
+        x_p, a_state, b_state, p_state = token_mixing(x_tm, state[i, 1], state[i, 2], state[i, 3], state[i, 4], **blocks[i]['att'])
         x += x_p
 
         x_cm = layer_norm(x, **blocks[i]['ln2'])
@@ -72,4 +70,3 @@ def rwkv_net(token, state, emb, blocks, ln_out, head):
     logits = head['weight'] @ x
 
     return logits, state
-
