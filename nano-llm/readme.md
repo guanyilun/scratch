@@ -48,4 +48,15 @@ Ideas
 
 ## Attempt 5
 Ideas
-- slightly more professional rwkv implementation
+- [X] slightly more professional rwkv implementation
+- [X] rwkv implementation has been mature enough to manage in a separate repo guanyilun/rwkv.jl
+
+## Attempt 6
+I was quite disappointed by auto differenciation system in Julia especially on its lack of support
+for anything that's parallel. Another equally annoying trouble is that every time I do a inplace
+mutation, I will have to write my own gradient function. In this attempt, I will rewrite rwkv in
+jax style
+- [X] rnn style rwkv in jax / state based / serial
+- [ ] parallel version with left assoc scan
+- [ ] training test
+
