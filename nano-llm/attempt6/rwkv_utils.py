@@ -1,4 +1,5 @@
-import jax.numpy as np
+import jax
+from jax import numpy as np
 
 def get_tokenizer():
     from tokenizers import Tokenizer
@@ -73,7 +74,7 @@ def rnn_generate_batch_stateless(model, weights_tree, prompt, n_tokens=10, token
     for _ in range(n_tokens):
         input_ids_batch = np.array(input_ids).reshape(1, -1)
         out = model(input_ids_batch, **weights_tree)
-        out_id = np.argmax(out[-1, 0, :])
+        out_id = np.argmax(out[0, -1, :])
         res = tokenizer.decode([out_id])
         print(res, end='')
         input_ids.pop(0)  # jit becomes very slow when shape changes

@@ -74,5 +74,5 @@ def rwkv_net_batch(token, emb, blocks, ln_out, head):
     x = layer_norm(x, **ln_out)
     # head: {'weight': (n_vocab, n_embed)}
     # put vocab back in last dimension for performance
-    logits = einsum(x, head['weight'], 's b e, v e -> s b v')
+    logits = einsum(x, head['weight'], 's b e, v e -> b s v')
     return logits
