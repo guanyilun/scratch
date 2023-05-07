@@ -22,7 +22,7 @@ class LRABatchConfig(NamedTuple):
                      n_classes_in=in_dim, n_classes_out=n_classes)
 
     def get_dataloader(self, name):
-        # name = 'train', 'val', or 'test'
+        # name can be 'train', 'val', or 'test'
         # output a data_generator function
         def _get_dataloader(loader: DataLoader):
             def data_generator():
@@ -41,6 +41,9 @@ def trim_or_pad(x, max_length):
 # %%
 # lra = LRABatchConfig.from_s5(24, "lra_benchmarks", "listops-classification")
 # train_loader = lra.get_dataloader('train')
+# i = 0
 # for batch in train_loader:
-#     print(batch)
-#     break
+#     x, y, l = batch
+#     if i > 10: break
+#     print(x[np.arange(x.shape[0]), l-1])
+#     i += 1

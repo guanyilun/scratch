@@ -1,2 +1,8 @@
 *.pyc
 __pycache__
+*.pth
+*.npy
+*.bin
+lra_benchmarks
+raw_datasets
+*.png

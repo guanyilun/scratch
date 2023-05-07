@@ -1,8 +1,10 @@
-#%%
 from jax import numpy as np
 import jax
 from jax.nn.initializers import uniform
 
+# ==========================
+# Initialization related
+# ==========================
 
 def init_weight_info(n_vocab, n_channel, n_layer, n_ffn, n_vocab_out=None):
     # default to the same vocab size for output
@@ -47,3 +49,27 @@ def init_weights(weight_info, key, init_fn):
 def init_uniform(key, shape, a=-1e-4, b=1e-4, dtype=np.float32):
     # uniform in [a, b) range, default to [-1e-4, 1e-4) following rwkv recommendation
     return uniform(scale=b-a)(key, shape, dtype=dtype) + a
+
+# ==========================
+# Filename Utilities
+# taken from:
+#   https://github.com/cwhy/rwkv-decon/blob/main/python_utils.py
+# ==========================
+
+def format_num(num, unit):
+    num_str = "{:.1f}".format(num).replace(".", "_")
+    return num_str.rstrip("0").rstrip("_") + unit
+
+def num_short_form(num):
+    if num == 0:
+        return "0"
+    abs_num = abs(num)
+    sign = "-" if num < 0 else ""
+    if abs_num < 1000:
+        return str(num)
+    elif abs_num < 1000000:
+        return sign + format_num(abs_num / 1000, "K")
+    elif abs_num < 1000000000:
+        return sign + format_num(abs_num / 1000000, "M")
+    else:
+        return sign + format_num(abs_num / 1000000000, "B")
