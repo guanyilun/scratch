@@ -6,6 +6,14 @@ from jax.nn.initializers import uniform
 # Initialization related
 # ==========================
 
+# every call returns a new key
+class KeyGen:
+    def __init__(self, seed=0):
+        self.key = jax.random.PRNGKey(seed)
+    def __call__(self):
+        self.key, new_key = jax.random.split(self.key)
+        return new_key
+
 def init_weight_info(n_vocab, n_channel, n_layer, n_ffn, n_vocab_out=None):
     # default to the same vocab size for output
     n_vocab_out = n_vocab_out or n_vocab
@@ -43,8 +51,8 @@ def init_weight_info(n_vocab, n_channel, n_layer, n_ffn, n_vocab_out=None):
         info['blocks'][i] = block
     return info
 
-def init_weights(weight_info, key, init_fn):
-    return jax.tree_map(lambda x: init_fn(key, x), weight_info, is_leaf=lambda x: isinstance(x, tuple))
+def init_weights(weight_info, keygen, init_fn, **kwargs):
+    return jax.tree_map(lambda x: init_fn(keygen(), x, **kwargs), weight_info, is_leaf=lambda x: isinstance(x, tuple))
 
 def init_uniform(key, shape, a=-1e-4, b=1e-4, dtype=np.float32):
     # uniform in [a, b) range, default to [-1e-4, 1e-4) following rwkv recommendation

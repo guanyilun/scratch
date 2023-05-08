@@ -1,3 +1,4 @@
+#%%
 import os
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -80,9 +81,19 @@ class RWKV(PreTrainedModel):
         obj.weights = weights
         return obj
 
+RWKVConfig.register_for_auto_class()
+RWKV.register_for_auto_class("AutoModel")
+
 # %%
+# debug
 # rwkv_config = RWKVConfig()
-# rwkv = RWKVPretrained(rwkv_config)
+# rwkv = RWKV(rwkv_config)
 # rwkv.save_pretrained("test_hfsave")
-# rwkv = RWKVPretrained.from_pretrained("test_hfsave")
+# rwkv = RWKV.from_pretrained("pretrained/rwkv-4-pile-169m")
 # rwkv(np.ones((1, 20), dtype=np.int32))
+
+# %%
+# convert pth to npy
+# from rwkv_utils import parse_rwkv_weight
+# weights = parse_rwkv_weight()
+# np.save("pretrained/rwkv-4-pile-169m/rwkv-4-pile-169m.npy", weights)

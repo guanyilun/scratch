@@ -1,14 +1,13 @@
 """train rwkv using long-range arena benchmark dataset"""
-
 import jax
 from jax import jit, numpy as np
-from jax.nn.initializers import zeros
+from jax.nn.initializers import zeros, glorot_normal
 import optax
 import wandb
 import os.path as op
 
 from rwkv_batch import rwkv_net_batch
-from rwkv_train_utils import init_weight_info, init_weights, init_uniform
+from rwkv_train_utils import init_weight_info, init_weights, init_uniform, KeyGen
 from lra_utils import LRABatchConfig
 
 adam_params = {
@@ -28,7 +27,7 @@ run_config = {
     'n_epoch': 3,
     'batch_size': 32,
     'eval_freq': 100,
-    'n_train_step': 5000, # or n_epoch, whichever comes first
+    # 'n_train_step': 5000, # or n_epoch, whichever comes first
     'n_channel': 512,
     'n_layer': 4,
     'n_ffn': 1024,
@@ -49,7 +48,6 @@ cache_path = "lra_benchmarks"
 lra_config = LRABatchConfig.from_s5(run_config['batch_size'], cache_path, "listops-classification")
 
 # initialize weights
-key = jax.random.PRNGKey(0)
 winfo = init_weight_info(
     lra_config.n_classes_in,
     run_config['n_channel'],
@@ -57,8 +55,17 @@ winfo = init_weight_info(
     run_config['n_ffn'],
     n_vocab_out=lra_config.n_classes_out
 )
-weights = init_weights(winfo, None, zeros)  # key is not required for zeros init
-weights['head']['weight'] = init_uniform(key, winfo['head']['weight'], a=-1e-4, b=1e-4)
+
+keygen = KeyGen()
+# option 1:
+# all zero init but head and embedding
+# weights = init_weights(winfo, None, zeros)  # key is not required for zeros init
+# weights['emb']['weight'] = init_uniform(keygen(), winfo['emb']['weight'], a=-1e-4, b=1e-4)
+# weights['head']['weight'] = init_uniform(keygen(), winfo['head']['weight'], a=-1e-4, b=1e-4)
+# option 2:
+# glorot_normal for all 2d matrices and zero for all 1d vectors
+w_init_fn = lambda key, shape: glorot_normal()(key, shape) if len(shape) == 2 else zeros(key, shape)
+weights = init_weights(winfo, keygen, w_init_fn)
 
 # initialize optimizers
 optimizer = {'lion': optax.lion, 'adam': optax.adam}[run_config['opt']](**run_config['opt_params'])
@@ -113,7 +120,7 @@ for _ in range(run_config['n_epoch']):
                 "validation_acc": res['validation_acc'],
                 "n_tokens_trained": i_step * run_config['batch_size'] * run_config['block_size'],
             })
-        if i_step >= run_config['n_train_step']:
+        if "n_train_step" in run_config and i_step >= run_config['n_train_step']:
             break
         i_step += 1
 
