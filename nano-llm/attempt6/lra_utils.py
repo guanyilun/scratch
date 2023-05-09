@@ -1,7 +1,9 @@
+import jax
 from jax import lax, numpy as np
 from typing import NamedTuple
 from pathlib import Path
 from s5.dataloading import Datasets, DataLoader
+import optax
 
 
 class LRABatchConfig(NamedTuple):
@@ -23,7 +25,7 @@ class LRABatchConfig(NamedTuple):
 
     def get_dataloader(self, name):
         # name can be 'train', 'val', or 'test'
-        # output a data_generator function
+        # output a data_generator iterator (x, y, l)
         def _get_dataloader(loader: DataLoader):
             def data_generator():
                 for x, y, l in loader:
@@ -31,6 +33,20 @@ class LRABatchConfig(NamedTuple):
                     yield x, np.array(y), np.array(l['lengths'])
             return data_generator()
         return {k: _get_dataloader(v) for k, v in self.s5_dataloaders.items()}[name]
+
+def lra_loss_fn(model_f, weights, batch):
+    x, y, lengths = batch
+    y_pred = model_f(x, **weights)
+    return optax.softmax_cross_entropy_with_integer_labels(y_pred[np.arange(x.shape[0]), lengths-1], y).mean()
+
+def lra_acc_fn(model_f, weights, batch):
+    x, y, lengths = batch
+    y_pred = model_f(x, **weights)
+    return (y_pred[np.arange(x.shape[0]), lengths-1].argmax(axis=-1) == y).mean()
+
+# =================
+# helper functions
+# =================
 
 def trim_or_pad(x, max_length):
     if x.shape[-1] >= max_length:

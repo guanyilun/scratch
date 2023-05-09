@@ -1,15 +1,20 @@
 """train rwkv using long-range arena benchmark dataset"""
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+
 import jax
 from jax import jit, numpy as np
 from jax.nn.initializers import zeros, glorot_normal
 import optax
 import wandb
 import os.path as op
+from functools import partial
 
 from rwkv_batch import rwkv_net_batch
 from rwkv_train_utils import init_weight_info, init_weights, init_uniform, KeyGen
-from lra_utils import LRABatchConfig
+from lra_utils import LRABatchConfig, lra_loss_fn, lra_acc_fn
 
+use_wandb = True
 adam_params = {
     'learning_rate': 1e-4,
     'b1': 0.9,
@@ -17,7 +22,7 @@ adam_params = {
     'eps': 1e-8,
 }
 lion_params = {
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-1,
     'b1': 0.95,
     'b2': 0.98,
     'weight_decay': 0.01
@@ -27,7 +32,7 @@ run_config = {
     'n_epoch': 3,
     'batch_size': 32,
     'eval_freq': 100,
-    # 'n_train_step': 5000, # or n_epoch, whichever comes first
+    'n_train_step': 5000, # or n_epoch, whichever comes first
     'n_channel': 512,
     'n_layer': 4,
     'n_ffn': 1024,
@@ -38,10 +43,11 @@ run_config = {
     'block_size': 2048,  # S5 default
 }
 
-wandb_run = wandb.init(
-    project="inside-transformer",
-    config=run_config,
-)
+if use_wandb:
+    wandb_run = wandb.init(
+        project="inside-transformer",
+        config=run_config,
+    )
 
 # initialize LRA dataset
 cache_path = "lra_benchmarks"
@@ -72,24 +78,16 @@ optimizer = {'lion': optax.lion, 'adam': optax.adam}[run_config['opt']](**run_co
 opt_state = optimizer.init(weights)
 
 # setup loss, its grad, accuracy and validation
-def loss_fn(weights, batch):
-    x, y, lengths = batch
-    y_pred = rwkv_net_batch(x, **weights)
-    return optax.softmax_cross_entropy_with_integer_labels(y_pred[np.arange(x.shape[0]), lengths-1], y).mean()
-
-loss_fn_grad = jax.value_and_grad(loss_fn)
-
-@jit
-def acc_fn(weights, batch):
-    x, y, lengths = batch
-    y_pred = rwkv_net_batch(x, **weights)
-    return (y_pred[np.arange(x.shape[0]), lengths-1].argmax(axis=-1) == y).mean()
+loss_fn = jax.jit(partial(lra_loss_fn, rwkv_net_batch))
+loss_fn_grad = jax.value_and_grad(loss_fn)  # jitted in make_step
+acc_fn = jax.jit(partial(lra_acc_fn, rwkv_net_batch))
 
 def get_validation_results(val_dataloader, weights):
     val_loss = 0
     n_batch = 0
     acc = []
     for batch in val_dataloader:
+        # not elegant: called model twice
         val_loss += loss_fn(weights, batch)
         n_batch += 1
         acc.append(acc_fn(weights, batch))
@@ -114,18 +112,21 @@ for _ in range(run_config['n_epoch']):
         if i_step % run_config['eval_freq'] == 0:
             print(f"step: {i_step}, batch loss: {loss_val}")
             res = get_validation_results(lra_config.get_dataloader('val'), weights)
-            wandb.log({
-                "batch_loss": loss_val,
-                "validation_loss": res['validation_loss'],
-                "validation_acc": res['validation_acc'],
-                "n_tokens_trained": i_step * run_config['batch_size'] * run_config['block_size'],
-            })
+            if use_wandb:
+                wandb.log({
+                    "batch_loss": loss_val,
+                    "validation_loss": res['validation_loss'],
+                    "validation_acc": res['validation_acc'],
+                    "n_tokens_trained": i_step * run_config['batch_size'] * run_config['block_size'],
+                })
         if "n_train_step" in run_config and i_step >= run_config['n_train_step']:
             break
         i_step += 1
 
-np.save(op.join(wandb_run.dir, "rwkv_weights.npy"), weights)
-wandb.finish()
+ofile = op.join(wandb_run.dir, "rwkv_weights.npy") if use_wandb else "rwkv_weights.npy"
+np.save(ofile, weights)
+
+if use_wandb: wandb.finish()
 
 # example loading saved weights with np
 # res = np.load("rwkv_weights.npy", allow_pickle=True).item()
