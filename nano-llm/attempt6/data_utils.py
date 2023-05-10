@@ -1,4 +1,7 @@
 """various data loading utilities in general"""
+import jax
+# jax.config.update('jax_platform_name', 'cpu')  # debug
+
 import jax.numpy as np
 from typing import NamedTuple
 from tokenizers import Tokenizer as HFTokenizer
@@ -53,6 +56,24 @@ class JSONLoader(NamedTuple):
                             l_batch = []
         return data_generator()
 
+def save_txt_as_npy(txt: str, tokenizer: Tokenizer, npy_file: str):
+    """save a text file as a numpy array of token ids"""
+    with open(txt, 'r') as f:
+        text = f.read()
+    tokens = tokenizer.encode(text)
+    np.save(npy_file, tokens)
+
+def load_npy_as_dataloader(npy_file: str, batch_size: int, block_size: int):
+    """load a numpy array of token ids as a dataloader"""
+    tokens = np.load(npy_file)
+    prev, next = tokens[:-1], tokens[1:]
+    x, l = fold_into_blocks(prev, block_size)
+    y, _ = fold_into_blocks(next, block_size)
+    def data_generator():
+        for i in range(0, len(x), batch_size):
+            yield x[i:i+batch_size], y[i:i+batch_size], l[i:i+batch_size]
+    return data_generator()
+
 def fold_into_blocks(arr, block_size, pad_value=0):
     """fold a 1D array into blocks of size block_size, padding `pad_value` if necessary.
     returns a tuple of (folded_arr, lengths) where lengths is a 1D array of the lengths of each block before
@@ -64,3 +85,6 @@ def fold_into_blocks(arr, block_size, pad_value=0):
     folded_arr = padded_arr.reshape(nrows, block_size)
     lengths = np.array([block_size] * (nrows-1) + [last_row_length])
     return folded_arr, lengths
+
+# save_txt_as_npy("data/shakespeare.txt", Tokenizer.from_file("20B_tokenizer.json"), "data/shakespeare.npy")
+# dataloader = load_npy_as_dataloader("data/shakespeare.npy", 8, 128)
