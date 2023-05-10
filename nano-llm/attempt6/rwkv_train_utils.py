@@ -1,6 +1,25 @@
 from jax import numpy as np
 import jax
 from jax.nn.initializers import uniform
+import optax
+
+# ==========================
+# Loss / Acc related
+# ==========================
+
+def get_loss_fn(model_f):
+    def loss_fn(weights, batch):
+        x, y, _ = batch
+        logits = model_f(x, **weights)
+        return optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
+    return loss_fn
+
+def get_acc_fn(model_f):
+    def acc_fn(weights, batch):
+        x, y, _ = batch
+        logits = model_f(x, **weights)
+        return (logits.argmax(axis=-1) == y).mean()
+    return acc_fn
 
 # ==========================
 # Initialization related

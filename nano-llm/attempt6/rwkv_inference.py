@@ -1,7 +1,3 @@
-#%%
-%load_ext autoreload
-%autoreload 2
-
 from rwkv_basic import rwkv_net
 from rwkv_batch import rwkv_net_batch
 from rwkv_utils import get_tokenizer, parse_rwkv_weight, parse_model_info, rnn_generate, rnn_generate_batch_stateless
@@ -17,4 +13,4 @@ prompt = "The quick brown fox jumps over the lazy"
 rnn_generate(rwkv_net, weights_tree, prompt, n_tokens=50, tokenizer=tokenizer)
 
 # test batch version
-rnn_generate_batch_stateless(rwkv_net_batch, weights_tree, prompt, n_tokens=100, tokenizer=tokenizer)
+# rnn_generate_batch_stateless(rwkv_net_batch, weights_tree, prompt, n_tokens=100, tokenizer=tokenizer)
