@@ -1,7 +1,8 @@
 """various data loading utilities in general"""
 import jax.numpy as np
-from typing import NamedTuple, Any
+from typing import NamedTuple
 from tokenizers import Tokenizer as HFTokenizer
+import json
 
 
 class Tokenizer(NamedTuple):
@@ -21,12 +22,13 @@ class JSONLoader(NamedTuple):
     """jsonl dataloader"""
     file: str
     tokenizer: Tokenizer
+    text_field: str
 
     @classmethod
-    def from_file(cls, json_file, tokenizer=None):
+    def from_file(cls, json_file, tokenizer=None, text_field="text"):
         if tokenizer is None:
             tokenizer = Tokenizer.from_file("20B_tokenizer.json")
-        return cls(file=json_file, tokenizer=tokenizer)
+        return cls(file=json_file, tokenizer=tokenizer, text_field=text_field)
 
     def get_dataloader(self, batch_size=8, block_size=256):
         def data_generator():
@@ -35,7 +37,8 @@ class JSONLoader(NamedTuple):
                 y_batch = []
                 l_batch = []
                 for line in f:
-                    tokens = self.tokenizer.encode(line.strip())
+                    text = json.loads(line)[self.text_field]
+                    tokens = self.tokenizer.encode(text.strip())
                     prev, next = tokens[:-1], tokens[1:]
                     x, l = fold_into_blocks(prev, block_size)
                     y, _ = fold_into_blocks(next, block_size)
