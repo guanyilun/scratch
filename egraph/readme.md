@@ -21,7 +21,7 @@ egraph_viz.render('egraph', format='pdf')
 ```
 It will produce a graph that looks like
 
-<img width="457" alt="image" src="https://github.com/guanyilun/scratch/assets/1038228/a1d22688-f8d9-4ec3-a2d4-0924a16f9b3e">
+<img width="620" alt="image" src="https://github.com/guanyilun/scratch/assets/1038228/7b91cb47-0155-459f-9ed4-725b2357f6f6">
 
 Next steps
 - add rewrite rules
