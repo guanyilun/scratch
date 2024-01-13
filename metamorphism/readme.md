@@ -1,2 +1,4 @@
 # Experiment with program metamorphism
-start by reimplementing jax function transformation
+## attempt 1
+- [X] start by reimplementing jax function transformation
+- [ ] automatic primitive definition

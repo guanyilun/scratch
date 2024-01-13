@@ -6,15 +6,9 @@ from dataclasses import dataclass
 
 class Primitive(NamedTuple):
     name: str
-
-add_p = Primitive('add')
-mul_p = Primitive('mul')
-
-def add(x, y):
-    return bind(add_p, x, y)
-
-def mul(x, y):
-    return bind(mul_p, x, y)
+    fun: "callable"
+    def __hash__(self) -> int:
+        return hash(self.name)
 
 #%%
 @dataclass
@@ -23,19 +17,6 @@ class Tracer:
     be used to represent its value during tracing"""
     @property
     def aval(self): return None
-    def __add__(self, x):
-        return add(self.aval, x)
-    def __mul__(self, x):
-        return mul(self.aval, x)
-    def __radd__(self, x):
-        return add(x, self.aval)
-    def __rmul__(self, x):
-        return mul(x, self.aval)
-    def __iadd__(self, x):
-        return self.__add__(x)
-    def __imul__(self, x):
-        return self.__mul__(x)
-    
 
 @dataclass 
 class Trace(ABC):
@@ -73,25 +54,18 @@ def bind(p: Primitive, *args):
     return trace.lower(out)
 
 #%%
-class EvalTrace(Trace): 
-    def lift(self, x): 
-        """evaluation don't need to lift value to a tracer"""
-        return x
-    def lower(self, x):
-        return x
-    def process_primitive(self, p, *args):
-        implementations = {
-            add_p: lambda x, y: x + y,
-            mul_p: lambda x, y: x * y,
-        }
-        out = implementations[p](*args)
-        return out
+primitives = []
 
-def make_eval_trace(fun):
-    def _transformed(*args):
-        with new_interpreter(EvalTrace):
-            return fun(*args)
-    return _transformed
+def morphosis(**kwargs):
+    # make primitives
+    for name, fun in kwargs.items():
+        primitive = Primitive(name, fun)
+        primitives[primitive] = primitive
+    primitives.append(kwargs)
+    try:
+        yield
+    finally:
+        primitives.pop()
 
 def test(a, b):
     c = add(a, b)
@@ -99,6 +73,7 @@ def test(a, b):
     return add(d, 1)
     
 make_eval_trace(test)(1, 2)
+
 #%%
 class Expr(NamedTuple):
     op: Primitive
