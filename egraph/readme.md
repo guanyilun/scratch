@@ -23,7 +23,30 @@ It will produce a graph that looks like
 
 <img width="620" alt="image" src="https://github.com/guanyilun/scratch/assets/1038228/7b91cb47-0155-459f-9ed4-725b2357f6f6">
 
-Next steps
-- add rewrite rules
-- equation saturation
+I have also implemented a simple rewriting rule system using `sympy.unify.usympy.unify`,
+which is a powerful but poorly documented functionality of `sympy`.
 
+Here is how I designed the term-rewriting system. We define a rewrite rule using
+a simple string
+```python
+from rewrite import Rule
+
+rule = Rule.parse("?a + ?b + c -> ?b * ?a + c")
+```
+Each variable with a `?` in front will be considered a **slot** variable, which
+matches any subexpression that match the pattern. `Rule` can be applied to
+an expression to apply it. Currently it only rewrite based on the first match,
+which is probably the most likely case. To apply the rule
+```python
+expr = sympify("a*x**2 + x + c")
+rule(expr)
+```
+The output is
+```python
+a*x**3 + c
+```
+in which we can see that `?a` has successfully matched to `a*x**2` and `?b` has
+matched to `x`.
+
+Next steps
+- equation saturation
