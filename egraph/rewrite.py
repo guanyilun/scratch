@@ -37,15 +37,45 @@ class Rule:
         matches = list(matches)
         if len(matches) == 0:
             return None
-        return self.rhs.subs(matches[0])
+        return self.rhs.xreplace(matches[0])
         
+@dataclass(frozen=True)
+class Prewalk:
+    """Apply a rule to an expression in a pre-order traversal (top-down).
+    Automatically passthrough mismatched expressions."""
+    rule: Rule 
+    def __call__(self, expr):
+        with evaluate(False):
+            if (r:=self.rule(expr)) is not None: return r
+            if (not expr.is_Symbol) and (not expr.is_Number):
+                return expr.func(*[self(arg) for arg in expr.args])
+            else:
+                return expr
+
+@dataclass(frozen=True)
+class Postwalk:
+    """Apply a rule to an expression in a post-order traversal (bottom-up).
+    Automatically passthrough mismatched expressions."""
+    rule: Rule 
+    def __call__(self, expr):
+        with evaluate(False):
+            if (not expr.is_Symbol) and (not expr.is_Number):
+                new_expr = expr.func(*[self(arg) for arg in expr.args])
+                return r if (r:=self.rule(new_expr)) is not None else new_expr
+            else:
+                return r if (r:=self.rule(expr)) is not None else expr
+
+
 if __name__ == "__main__":
-    rule = "?a + ?b + c -> ?b * ?a + c"
-    rule = Rule.parse(rule)
-    expr = sympify("a*x**2 + x + c")
+    rule = Rule.parse("?a + ?b + c -> ?b * ?a + c")
+    expr = sympify("x + y + c")
     print(rule(expr))
-    # expr = sympify("a + b + c")
-    # print(r(expr))
+
+    rule_pre = Prewalk(rule)
+    print(rule_pre(expr))
+
+    rule_post = Postwalk(rule)
+    print(rule_post(expr))
 
 
 # old codes that I don't want to delete yet

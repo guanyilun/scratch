@@ -48,5 +48,33 @@ a*x**3 + c
 in which we can see that `?a` has successfully matched to `a*x**2` and `?b` has
 matched to `x`.
 
-Next steps
-- equation saturation
+## 240114
+Added two rewriting routines: `Prewalk` and `Postwalk` which traverses through each expression tree differently. `Prewalk` traverses in a top-down left-right approach, whereas `Postwalk` traverses using bottom-up left-right approach. Subexpressions that do not match are automatically passed through.
+
+For example:
+```python
+rule = Rule.parse("?a + ?b + c -> ?b * ?a + c")
+expr = sympify("x + y + c")
+print(rule(expr))
+
+rule_pre = Prewalk(rule)
+print(rule_pre(expr))
+
+rule_post = Postwalk(rule)
+print(rule_post(expr))
+```
+The outputs are
+```
+c + x*y
+c + x*y
+c + x*y
+```
+They all give the same results but the way to traverse through expression is different.
+
+## TODO list
+- [X] build egraph from sympy expression
+- [X] add rewriters based on pattern
+- [X] add post- and pre-walk routines for rule application
+- [ ] support a chain of rules
+- [ ] allow predicates on rewriters
+- [ ] implement equation saturation
