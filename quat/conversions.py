@@ -237,7 +237,7 @@ def utc2ut1(utc: UTC, dut1: float) -> UT1:
     """
     cal = jd2cal(JD(utc.v1, utc.v2))
     delta_tai_utc = dt_tai_utc(cal)
-    # UT1-TAI = UT1-UTC-(TAI-UTC) = dut1 - delta_tai_utc
+    # UT1-TAI = UT1-UTC-(TAI-UTC)
     dta = dut1 - delta_tai_utc
     return tai2ut1(utc2tai(utc), dta)
 
@@ -266,3 +266,8 @@ def era(ut1: UT1) -> float:
     # Earth rotation angle at this UT1.
     theta = (f + np.polyval(ERA_POLY, t)) % 1
     return theta * 2 * np.pi
+
+def ctime2tt(ctime):
+    jd = ctime2jd(ctime)
+    tai = utc2tai(jd)
+    return tai2tt(tai) 

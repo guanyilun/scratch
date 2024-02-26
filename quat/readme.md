@@ -1,6 +1,10 @@
 # rotations
 Learning by DIY: rewrite quaternion functions in so3g.
 
+### TODO List:
+- [ ] bias-precession-nutation matrix <- major task
+- [ ] vectorization
+
 ### Interesting resources that I come across while learning this:
 - most definitive reference: https://pypi.org/project/pyerfa/
 - a javascript ephemeris calculation code: https://github.com/mivion/ephemeris
