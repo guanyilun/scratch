@@ -6,7 +6,7 @@ functions
 #%% target script
 class Bookbinder:
     def bind_book(self, book):
-        print(f"Binding {book}")
+        pass
         
 def bind_book():
     b = Bookbinder()
@@ -35,17 +35,46 @@ from unittest.mock import patch
 
 # normal call will not capture anything
 bind_book()
-print(books_captured)
+print("nothing captured:", books_captured)
 
 # with patch.object(Bookbinder, 'bind_book', new=capture_books(Bookbinder.bind_book)): # alternative
 with patch('__main__.Bookbinder.bind_book', new=capture_books(Bookbinder.bind_book)):
     bind_book()
 # this will contain captured book
-print(books_captured)
+print("captured:", books_captured)
 
 # calling again will not make any difference outside the patch context
+books_captured.clear()
 bind_book()
-print(books_captured)
+print("nothing captured:", books_captured)
 
 # This probably looks unremarkable, but the idea is quite new to me:
 # now we are able to probe internal dynamics of function without modifying it
+
+#%% alternative
+books_captured.clear()
+
+# normal call will not capture anything
+bind_book()
+print("nothing captured:", books_captured)
+
+patcher = patch('__main__.Bookbinder.bind_book', new=capture_books(Bookbinder.bind_book))
+
+patcher.start()
+bind_book()
+# this will contain captured book
+print("captured:", books_captured)
+patcher.stop()
+
+# calling again will not make any difference outside the patch context
+books_captured.clear()
+bind_book()
+print("nothing captured:", books_captured)
+
+books_captured.clear()
+from contextlib import ExitStack
+with ExitStack() as stack:
+    files = [stack.enter_context(patcher)]
+
+    bind_book()
+print("captured:", books_captured)
