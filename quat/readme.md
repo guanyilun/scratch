@@ -25,3 +25,5 @@ the function is compiled but will recompute if a new static arguments show up.
   **         2400000.5       50123.2       (MJD method)
   **         2450123.5           0.2       (date & time method)
   ```
+- a more model javascript implementation
+  https://github.com/0xStarcat/Moshier-Ephemeris-JS
