@@ -86,8 +86,11 @@ NUTATION_TABLE = np.array(
      [-1, 0, 0, 0,2,   1405.0,    0.0,    4.0,   -610.0,   0.0,   2.0],
      [ 1, 1, 2,-2,2,   1290.0,    0.0,    0.0,   -556.0,   0.0,   0.]])
     
-def nutation(date):
+def compute_nutation(date):
     t = ((date.v1-2451545.0) + date.v2)/36525
+
+    # Note: this looks more precise, consider switching to this
+    # https://github.com/saurvs/astro-rust/blob/master/src/nutation.rs#L114-L128
 
     # mean anomaly of the Moon
     el = jnp.mod(485868.249036 + t * 1717915923.2178, 1296000) * arcsec

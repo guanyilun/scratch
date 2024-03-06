@@ -5,7 +5,6 @@ jax.config.update("jax_enable_x64", True)
 import numpy as np
 import jax.numpy as jnp
 
-from so3g.proj import coords
 import quat_attempt2 as quat
 
 ERA_EPOCH = 946684800 + 3600 * 12
