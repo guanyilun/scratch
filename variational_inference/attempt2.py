@@ -20,6 +20,33 @@ class MeanField(NamedTuple):
         sigma = jnp.exp(self.log_sigma) + 1e-5
         return norm.logpdf(z, self.mu, sigma).sum()
 
+def array_to_tril(arr, d):
+    L = jnp.zeros((d, d))
+    idx = 0
+    for i in range(d):
+        for j in range(i + 1):
+            L = L.at[i, j].set(arr[idx])
+            idx += 1
+    return L
+
+class FullCovarianceGaussian(NamedTuple):
+    mu: jnp.ndarray
+    L_elements: jnp.ndarray  # Lower triangular matrix from Cholesky decomposition of covariance
+
+    def sample(self, key, nsamps):
+        eps = jax.random.normal(key, shape=(nsamps, self.mu.shape[0]))
+        L = array_to_tril(self.L_elements, len(self.mu))
+        return self.mu + eps @ L.T
+
+    def logpdf(self, z):
+        d = self.mu.shape[0]
+        L = array_to_tril(self.L_elements, len(self.mu))
+        cov = L @ L.T
+        log_det_cov = 2 * jnp.sum(jnp.log(jnp.diag(L)))
+        inv_cov = jnp.linalg.inv(cov)
+        diff = z - self.mu
+        return -0.5 * (jnp.sum(diff @ inv_cov * diff) + log_det_cov + d * jnp.log(2 * jnp.pi)).sum()
+
 class VIConfig(NamedTuple):
     nsamps: int
     max_iter: int
@@ -31,8 +58,8 @@ class VIConfig(NamedTuple):
         lnq = jax.vmap(model.logpdf, in_axes=(0,))
         def loss_fn(model, key):
             z = model.sample(key, self.nsamps)
-            eblo = jnp.mean(lnposterior(z) - lnq(z))
-            return -eblo
+            elbo = jnp.mean(lnposterior(z) - lnq(z))
+            return -elbo
 
         @jax.jit
         def train_step(opt_state, model, key):
@@ -76,7 +103,11 @@ if __name__ == '__main__':
         mu=jnp.array([0., 0.]),
         log_sigma=jnp.array([0., 0.])
     )
-    
+    # model = FullCovarianceGaussian(
+    #     mu=jnp.array([0., 0.]),
+    #     L_elements=jnp.array([1., 0., 1.])
+    # )
+
     # define the config
     vi_config = VIConfig(
         nsamps=100,
