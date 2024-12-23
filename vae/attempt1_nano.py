@@ -80,5 +80,5 @@ if __name__ == '__main__':
 
     params = init_params(data_dim, hidden_dim, latent_dim, keygen)
     x = jax.random.normal(keygen(), (batch_size, data_dim))
-    x_recon, mu, logvar = vae(x, params['encoder_weights'], params['decoder_weights'], key=keygen())
+    x_recon, mu, logvar = vae(x, key=keygen(), **params)
     print(loss(x, x_recon, mu, logvar))
