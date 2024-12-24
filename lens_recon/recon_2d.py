@@ -16,9 +16,6 @@ def gauss_beam(ells, beam_fwhm):
 def get_nl(ell, nlev_t, beam_fwhm):
     return (nlev_t * arcmin)**2. / gauss_beam(ell, beam_fwhm*arcmin)**2
 
-def resolution(shape,wcs):
-    return np.abs(wcs.wcs.cdelt[1])*deg
-
 def cosine_window(Ny,Nx,lenApodY=30,lenApodX=30,padY=0,padX=0):
     # Based on a routine by Thibaut Louis
     win=np.ones((Ny,Nx))
@@ -53,7 +50,7 @@ def cosine_window(Ny,Nx,lenApodY=30,lenApodX=30,padY=0,padX=0):
 def get_taper_deg(shape,wcs,taper_width_degrees=1.0,pad_width_degrees=0.,weight=None,only_y=False):
     Ny,Nx = shape[-2:]
     if weight is None: weight = np.ones(shape[-2:])
-    res = resolution(shape,wcs)
+    res = wcs.wcs.cdelt[1]*deg
     pix_apod = int(taper_width_degrees*np.pi/180./res)
     pix_pad = int(pad_width_degrees*np.pi/180./res)
     taper = enmap.enmap(cosine_window(Ny,Nx,lenApodY=pix_apod,lenApodX=pix_apod if not(only_y) else 0,padY=pix_pad,padX=pix_pad if not(only_y) else 0)*weight,wcs)
@@ -221,7 +218,7 @@ def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax
     # real space CMB lensing convergence map
     # kappa = enmap.ifft(kappa_k, normalize='phys').real
 
-    return kappa_k, (noise_2d, taper)
+    return kappa_k, (noise_2d,)
 
 def get_cl(kmap1, kmap2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
     import symlens.utils as su
@@ -246,21 +243,22 @@ if __name__ == '__main__':
     ps_lensinput = powspec.read_camb_full_lens("data/cosmo2017_10K_acc3_lenspotentialCls.dat")
     ps_lcmb = powspec.read_spectrum("data/cosmo2017_10K_acc3_lensedCls.dat")
     expt = Expt("SO", 1.4, 6)
-    # nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
+    nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
+    nmap = enmap.rand_map(shape, wcs, nl)
 
     # test sim_lens_map_flat
     m, (phi_map, _) = sim_lens_map_flat((1,)+shape, wcs, ps_lensinput)
     taper, _ = get_taper_deg(shape, wcs)
+    m += nmap
     kmap1 = kmap2 = enmap.fft(m[0]*taper, normalize='phys')  # TT
 
     # test reconstruction
     kappa_recon_k, _ = recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt=expt, rlmin=1000, rlmax=3000)
-    kappa_in_k = enmap.fft(phi_map*taper, normalize='phys')*l*(l+1)/2
-    # kappa_in_k = enmap.fft(phi_map, normalize='phys')*l*(l+1)/2
+    kappa_in_k = enmap.fft(phi_map, normalize='phys')*l*(l+1)/2
 
     # test power spectrum
     l, inkappa_x_outkappa = get_cl(kappa_recon_k, kappa_in_k, 1000, 3000, 100, taper=taper, taper_order=4)
-    l, inkappa_x_inkappa = get_cl(kappa_in_k, kappa_in_k, 1000, 3000, 100, taper=taper, taper_order=2)
+    l, inkappa_x_inkappa = get_cl(kappa_in_k, kappa_in_k, 1000, 3000, 100)
 
     plt.semilogy(l, np.abs(inkappa_x_outkappa), label='recon x input')
     plt.semilogy(l, np.abs(inkappa_x_inkappa), label='input x input')
