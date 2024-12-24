@@ -69,7 +69,19 @@ class Expt:
         Beam FWHM in arcmin
     nlev_t : float
         Noise level in temperature in uK-arcmin
-
+    lmin : int, optional
+        Minimum multipole to include, default is 30
+    lmax : int, optional
+        Maximum multipole to include, default is 3000
+    
+    Methods
+    -------
+    get_nl(ell)
+        Get noise power spectrum at multipoles ell
+    get_bl(ell) 
+        Get beam transfer function at multipoles ell
+    get_kmask(shape, wcs)
+        Get Fourier space mask based on lmin/lmax
     """
     name: str
     beam_fwhm: float
@@ -136,26 +148,25 @@ def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax
         Shape of the map arrays (ny, nx).
     wcs : WCS object
         World Coordinate System object defining the pixelization.
-    map1 : ndarray
+    kmap1 : ndarray
         First CMB map in Fourier space.
-    map2 : ndarray
+    kmap2 : ndarray
         Second CMB map in Fourier space.
     ps_lcmb : ndarray
         Power spectrum array containing theoretical CMB spectra.
         Expected ordering: [T, E, B].
     expt : Expt
-        Experiment object containing noise properties.
-    cmask : ndarray, optional
-        CMB mask
-    kmask : ndarray, optional
-        Fourier space mask. Default is None.
-
+        Experiment object containing beam and noise properties.
+    rlmin : int
+        Minimum multipole for reconstruction.
+    rlmax : int
+        Maximum multipole for reconstruction.
     Returns
     -------
-    kappa : ndarray
-        Reconstructed CMB lensing convergence map in real space.
-    noise_2d : ndarray
-        2D noise power spectrum of the reconstruction.
+    kappa_k : ndarray
+        Reconstructed CMB lensing convergence map in Fourier space.
+    (noise_2d,) : tuple
+        Tuple containing the 2D noise power spectrum of the reconstruction.
 
     Notes
     -----
@@ -163,11 +174,7 @@ def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax
     1. Computes the unnormalized quadratic estimator
     2. Calculates the normalization
     3. Applies the normalization to get the final convergence map
-    4. Transforms the result back to real space
 
-    References
-    ----------
-    .. [1] Hu & Okamoto 2002, ApJ 574, 566
     """
     import symlens
     from symlens import utils as su
@@ -178,7 +185,7 @@ def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax
     kmask = (modlmap >= rlmin) * (modlmap <= rlmax)
 
     ell = np.arange(ps_lcmb.shape[-1])
-    cltt = ps_lcmb[0, 0]  # phi, T, E, B ordering
+    cltt = ps_lcmb[0, 0]  # T, E, B ordering
 
     ucltt = su.interp(ell, cltt)(modlmap)  # lensed cl
     tcltt = ucltt + expt.get_nl(modlmap)
@@ -215,12 +222,38 @@ def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax
     # normalized Fourier space CMB lensing convergence map
     kappa_k = norm_k * ukappa_k
 
-    # real space CMB lensing convergence map
-    # kappa = enmap.ifft(kappa_k, normalize='phys').real
-
     return kappa_k, (noise_2d,)
 
 def get_cl(kmap1, kmap2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
+    """Calculate the binned cross-power spectrum between two Fourier space maps.
+    The power spectrum is computed as the real part of kmap1 * kmap2.conj(),
+    normalized by the mean of the taper function raised to taper_order if provided.
+    The result is binned in annuli in 2D Fourier space.
+
+    Parameters
+    ----------
+    kmap1 : ndmap
+        First map in Fourier space
+    kmap2 : ndmap
+        Second map in Fourier space
+    ellmin : int
+        Minimum multipole for binning
+    ellmax : int
+        Maximum multipole for binning
+    delta_ell : int
+        Width of multipole bins
+    taper : ndarray, optional
+        Real-space window function to correct for, by default None
+    taper_order : int, optional
+        Power to raise the taper to for normalization correction, by default None
+
+    Returns
+    -------
+    centers : ndarray
+        Central multipole values for each bin
+    p1d : ndarray
+        Binned power spectrum values
+    """
     import symlens.utils as su
 
     modlmap = kmap1.modlmap()
@@ -238,10 +271,11 @@ def get_cl(kmap1, kmap2, ellmin, ellmax, delta_ell, taper=None, taper_order=None
 if __name__ == '__main__':
     from matplotlib import pyplot as plt
 
-    shape, wcs = enmap.geometry(pos=(0,0), res=1*arcmin, shape=(2000, 2000))
+    shape, wcs = enmap.geometry(pos=(0,0), res=1*arcmin, shape=(1000, 1000))
     l = enmap.modlmap(shape, wcs)
     ps_lensinput = powspec.read_camb_full_lens("data/cosmo2017_10K_acc3_lenspotentialCls.dat")
     ps_lcmb = powspec.read_spectrum("data/cosmo2017_10K_acc3_lensedCls.dat")
+
     expt = Expt("SO", 1.4, 6)
     nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
     nmap = enmap.rand_map(shape, wcs, nl)
