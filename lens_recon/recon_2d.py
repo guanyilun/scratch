@@ -79,10 +79,10 @@ def sim_lens_map_flat(shape, wcs, ps, expt=None):
     if expt is not None:
         l = m.modlmap()
         beam2d = expt.get_bl(l)
-        m = enmap.ifft(enmap.fft(m)*beam2d).real
+        m = enmap.ifft(enmap.fft(m, normalize="phys")*beam2d, normalize="physics").real
     return m, (phi_map, cmb_map_unlensed)
 
-def recon_2d_symlens(shape, wcs, map1_k, map2_k, ps_lensinput, expt: Expt, rlmin, rlmax):
+def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rlmax):
     """Perform 2D CMB lensing reconstruction using symlens package.
 
     This function implements a quadratic estimator for CMB lensing reconstruction
@@ -95,13 +95,13 @@ def recon_2d_symlens(shape, wcs, map1_k, map2_k, ps_lensinput, expt: Expt, rlmin
         Shape of the map arrays (ny, nx).
     wcs : WCS object
         World Coordinate System object defining the pixelization.
-    map1_k : ndarray
+    map1 : ndarray
         First CMB map in Fourier space.
-    map2_k : ndarray
+    map2 : ndarray
         Second CMB map in Fourier space.
-    ps_lensinput : ndarray
+    ps_lcmb : ndarray
         Power spectrum array containing theoretical CMB spectra.
-        Expected ordering: [phi, T, E, B].
+        Expected ordering: [T, E, B].
     expt : Expt
         Experiment object containing noise properties.
     cmask : ndarray, optional
@@ -131,14 +131,18 @@ def recon_2d_symlens(shape, wcs, map1_k, map2_k, ps_lensinput, expt: Expt, rlmin
     import symlens
     from symlens import utils as su
 
-    ell = np.arange(ps_lensinput.shape[-1])
-    cltt = ps_lensinput[1, 1]  # phi, T, E, B ordering
-    modlmap = map1_k.modlmap()
+    kmap1 = enmap.fft(map1, normalize='phys')
+    kmap2 = enmap.fft(map2, normalize='phys')
+    modlmap = map1.modlmap()
+
+    ell = np.arange(ps_lcmb.shape[-1])
+    cltt = ps_lcmb[0, 0]  # phi, T, E, B ordering
+
     ucltt = su.interp(ell, cltt)(modlmap)  # lensed cl
     tcltt = ucltt + expt.get_nl(modlmap)
     feed_dict = {
-        'X': map1_k,
-        'Y': map2_k,
+        'X': kmap1,
+        'Y': kmap2,
         'uC_T_T': ucltt,
         'tC_T_T': tcltt
     }
@@ -170,18 +174,51 @@ def recon_2d_symlens(shape, wcs, map1_k, map2_k, ps_lensinput, expt: Expt, rlmin
     kappa_k = norm_k * ukappa_k
 
     # real space CMB lensing convergence map
-    kappa = enmap.ifft(kappa_k, normalize='phys')
+    kappa = enmap.ifft(kappa_k, normalize='phys').real
 
     return kappa, (noise_2d,)
 
+def get_cl(map1, map2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
+    import symlens.utils as su
+
+    modlmap = map1.modlmap()
+    bin_edges = np.arange(ellmin, ellmax, delta_ell)
+    binner = su.bin2D(modlmap, bin_edges)
+
+    kmap1 = enmap.fft(map1, normalize='phys')
+    kmap2 = enmap.fft(map2, normalize='phys')
+
+    if taper is None: w = 1
+    else: w  = np.mean(taper**taper_order)
+
+    p2d = (kmap1 * kmap2.conj()).real / w
+    centers, p1d = binner.bin(p2d)
+
+    return centers, p1d
+
 if __name__ == '__main__':
-    shape, wcs = enmap.geometry(pos=(0,0), res=0.5*arcmin, shape=(100, 100))
-    shape = (1,) + shape
-    ps = powspec.read_camb_full_lens("data/cosmo2017_10K_acc3_lenspotentialCls.dat")
+    from matplotlib import pyplot as plt
+
+    shape, wcs = enmap.geometry(pos=(0,0), res=0.5*arcmin, shape=(500, 500))
+    l = enmap.modlmap(shape, wcs)
+    ps_lensinput = powspec.read_camb_full_lens("data/cosmo2017_10K_acc3_lenspotentialCls.dat")
+    ps_lcmb = powspec.read_spectrum("data/cosmo2017_10K_acc3_lensedCls.dat")
     expt = Expt("SO", 1.4, 6)
+    nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
 
     # test sim_lens_map_flat
-    m, _ = sim_lens_map_flat(shape, wcs, ps, expt=expt)
-    kmap1 = enmap.fft(m[0], normalize='phys')
-    kmap2 = kmap1
-    m_recon, _ = recon_2d_symlens(shape, wcs, kmap1, kmap2, ps, expt, rlmin=30, rlmax=3000)
+    m, (phi_map, _) = sim_lens_map_flat((1,)+shape, wcs, ps_lensinput)
+    noise_map = enmap.rand_map(shape, wcs, nl)
+    m = m[0] # + noise_map
+
+    # test reconstruction
+    kappa_recon, _ = recon_2d_symlens(shape, wcs, m, m, ps_lcmb, expt=expt, rlmin=1000, rlmax=3000)
+    kappa_in = enmap.ifft(enmap.fft(phi_map, normalize='phys')*l*(l+1)/2, normalize="phys").real
+
+    # test power spectrum
+    l, inkappa_x_outkappa = get_cl(kappa_recon, kappa_in, 1000, 3000, 50)
+    l, inkappa_x_inkappa = get_cl(kappa_in, kappa_in, 1000, 3000, 50)
+    plt.plot(l, np.abs(inkappa_x_outkappa), label='recon x input')
+    plt.plot(l, np.abs(inkappa_x_inkappa), label='input x input')
+    plt.legend()
+    plt.savefig("recon_2d_test.png")
