@@ -15,7 +15,51 @@ def gauss_beam(ells, beam_fwhm):
 
 def get_nl(ell, nlev_t, beam_fwhm):
     return (nlev_t * arcmin)**2. / gauss_beam(ell, beam_fwhm*arcmin)**2
-    
+
+def resolution(shape,wcs):
+    return np.abs(wcs.wcs.cdelt[1])*deg
+
+def cosine_window(Ny,Nx,lenApodY=30,lenApodX=30,padY=0,padX=0):
+    # Based on a routine by Thibaut Louis
+    win=np.ones((Ny,Nx))
+    i = np.arange(Nx) 
+    j = np.arange(Ny)
+    ii,jj = np.meshgrid(i,j)
+    # ii is array of x indices
+    # jj is array of y indices
+    # numpy indexes (j,i)
+    # xdirection
+    if lenApodX>0:
+        r=ii.astype(float)-padX
+        sel = np.where(ii<=(lenApodX+padX))
+        win[sel] = 1./2*(1-np.cos(-np.pi*r[sel]/lenApodX))
+        sel = np.where(ii>=((Nx-1)-lenApodX-padX))
+        r=((Nx-1)-ii-padX).astype(float)
+        win[sel] = 1./2*(1-np.cos(-np.pi*r[sel]/lenApodX))
+    # ydirection
+    if lenApodY>0:
+        r=jj.astype(float)-padY
+        sel = np.where(jj<=(lenApodY+padY))
+        win[sel] *= 1./2*(1-np.cos(-np.pi*r[sel]/lenApodY))
+        sel = np.where(jj>=((Ny-1)-lenApodY-padY))
+        r=((Ny-1)-jj-padY).astype(float)
+        win[sel] *= 1./2*(1-np.cos(-np.pi*r[sel]/lenApodY))
+    win[0:padY,:]=0
+    win[:,0:padX]=0
+    win[Ny-padY:,:]=0
+    win[:,Nx-padX:]=0
+    return win
+
+def get_taper_deg(shape,wcs,taper_width_degrees=1.0,pad_width_degrees=0.,weight=None,only_y=False):
+    Ny,Nx = shape[-2:]
+    if weight is None: weight = np.ones(shape[-2:])
+    res = resolution(shape,wcs)
+    pix_apod = int(taper_width_degrees*np.pi/180./res)
+    pix_pad = int(pad_width_degrees*np.pi/180./res)
+    taper = enmap.enmap(cosine_window(Ny,Nx,lenApodY=pix_apod,lenApodX=pix_apod if not(only_y) else 0,padY=pix_pad,padX=pix_pad if not(only_y) else 0)*weight,wcs)
+    w2 = np.mean(taper**2.)
+    return taper,w2
+
 @dataclass
 class Expt:
     """Convenience wrapper class to store experiment parameters
@@ -82,7 +126,7 @@ def sim_lens_map_flat(shape, wcs, ps, expt=None):
         m = enmap.ifft(enmap.fft(m, normalize="phys")*beam2d, normalize="physics").real
     return m, (phi_map, cmb_map_unlensed)
 
-def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rlmax):
+def recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt: Expt, rlmin, rlmax):
     """Perform 2D CMB lensing reconstruction using symlens package.
 
     This function implements a quadratic estimator for CMB lensing reconstruction
@@ -131,22 +175,23 @@ def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rl
     import symlens
     from symlens import utils as su
 
-    kmap1 = enmap.fft(map1, normalize='phys')
-    kmap2 = enmap.fft(map2, normalize='phys')
-    modlmap = map1.modlmap()
+    modlmap = kmap1.modlmap()
+
+    cmask = expt.get_kmask(shape, wcs)
+    kmask = (modlmap >= rlmin) * (modlmap <= rlmax)
 
     ell = np.arange(ps_lcmb.shape[-1])
     cltt = ps_lcmb[0, 0]  # phi, T, E, B ordering
 
     ucltt = su.interp(ell, cltt)(modlmap)  # lensed cl
     tcltt = ucltt + expt.get_nl(modlmap)
+
     feed_dict = {
         'X': kmap1,
         'Y': kmap2,
         'uC_T_T': ucltt,
         'tC_T_T': tcltt
     }
-    kmask = (modlmap >= rlmin) * (modlmap <= rlmax)
 
     # unnormalized lensing map in fourier space
     ukappa_k = symlens.unnormalized_quadratic_estimator(shape,
@@ -154,8 +199,8 @@ def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rl
                                                         feed_dict,
                                                         "hu_ok",
                                                         "TT",
-                                                        xmask=kmask,
-                                                        ymask=kmask)
+                                                        xmask=cmask,
+                                                        ymask=cmask)
 
     # normaliztion
     norm_k = symlens.A_l(shape,
@@ -163,8 +208,8 @@ def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rl
                          feed_dict,
                          "hu_ok",
                          "TT",
-                         xmask=kmask,
-                         ymask=kmask,
+                         xmask=cmask,
+                         ymask=cmask,
                          kmask=kmask)
 
     # noise
@@ -174,19 +219,16 @@ def recon_2d_symlens(shape, wcs, map1, map2, ps_lensinput, expt: Expt, rlmin, rl
     kappa_k = norm_k * ukappa_k
 
     # real space CMB lensing convergence map
-    kappa = enmap.ifft(kappa_k, normalize='phys').real
+    # kappa = enmap.ifft(kappa_k, normalize='phys').real
 
-    return kappa, (noise_2d,)
+    return kappa_k, (noise_2d, taper)
 
-def get_cl(map1, map2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
+def get_cl(kmap1, kmap2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
     import symlens.utils as su
 
-    modlmap = map1.modlmap()
+    modlmap = kmap1.modlmap()
     bin_edges = np.arange(ellmin, ellmax, delta_ell)
     binner = su.bin2D(modlmap, bin_edges)
-
-    kmap1 = enmap.fft(map1, normalize='phys')
-    kmap2 = enmap.fft(map2, normalize='phys')
 
     if taper is None: w = 1
     else: w  = np.mean(taper**taper_order)
@@ -199,26 +241,28 @@ def get_cl(map1, map2, ellmin, ellmax, delta_ell, taper=None, taper_order=None):
 if __name__ == '__main__':
     from matplotlib import pyplot as plt
 
-    shape, wcs = enmap.geometry(pos=(0,0), res=0.5*arcmin, shape=(500, 500))
+    shape, wcs = enmap.geometry(pos=(0,0), res=1*arcmin, shape=(2000, 2000))
     l = enmap.modlmap(shape, wcs)
     ps_lensinput = powspec.read_camb_full_lens("data/cosmo2017_10K_acc3_lenspotentialCls.dat")
     ps_lcmb = powspec.read_spectrum("data/cosmo2017_10K_acc3_lensedCls.dat")
     expt = Expt("SO", 1.4, 6)
-    nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
+    # nl = expt.get_nl(np.arange(ps_lcmb.shape[-1])).reshape(1, 1, -1)
 
     # test sim_lens_map_flat
     m, (phi_map, _) = sim_lens_map_flat((1,)+shape, wcs, ps_lensinput)
-    noise_map = enmap.rand_map(shape, wcs, nl)
-    m = m[0] # + noise_map
+    taper, _ = get_taper_deg(shape, wcs)
+    kmap1 = kmap2 = enmap.fft(m[0]*taper, normalize='phys')  # TT
 
     # test reconstruction
-    kappa_recon, _ = recon_2d_symlens(shape, wcs, m, m, ps_lcmb, expt=expt, rlmin=1000, rlmax=3000)
-    kappa_in = enmap.ifft(enmap.fft(phi_map, normalize='phys')*l*(l+1)/2, normalize="phys").real
+    kappa_recon_k, _ = recon_2d_symlens(shape, wcs, kmap1, kmap2, ps_lcmb, expt=expt, rlmin=1000, rlmax=3000)
+    kappa_in_k = enmap.fft(phi_map*taper, normalize='phys')*l*(l+1)/2
+    # kappa_in_k = enmap.fft(phi_map, normalize='phys')*l*(l+1)/2
 
     # test power spectrum
-    l, inkappa_x_outkappa = get_cl(kappa_recon, kappa_in, 1000, 3000, 50)
-    l, inkappa_x_inkappa = get_cl(kappa_in, kappa_in, 1000, 3000, 50)
-    plt.plot(l, np.abs(inkappa_x_outkappa), label='recon x input')
-    plt.plot(l, np.abs(inkappa_x_inkappa), label='input x input')
+    l, inkappa_x_outkappa = get_cl(kappa_recon_k, kappa_in_k, 1000, 3000, 100, taper=taper, taper_order=4)
+    l, inkappa_x_inkappa = get_cl(kappa_in_k, kappa_in_k, 1000, 3000, 100, taper=taper, taper_order=2)
+
+    plt.semilogy(l, np.abs(inkappa_x_outkappa), label='recon x input')
+    plt.semilogy(l, np.abs(inkappa_x_inkappa), label='input x input')
     plt.legend()
     plt.savefig("recon_2d_test.png")
