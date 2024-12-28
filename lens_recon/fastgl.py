@@ -194,6 +194,9 @@ def compute_gl_points(n: int):
 
 @dataclass
 class GL_Integrator:
+    w: jnp.ndarray
+    x: jnp.ndarray
+    theta: jnp.ndarray
     def __init__(self, n: int):
         assert n >= 1, "number of points must be at least 1"
         x, w, theta = compute_gl_points(n)
