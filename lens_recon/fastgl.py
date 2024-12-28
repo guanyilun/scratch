@@ -193,25 +193,22 @@ def compute_gl_points(n: int):
     return x, w, th
 
 @dataclass
-class GL_Integrator:
+class FastGL:
     w: jnp.ndarray
     x: jnp.ndarray
-    theta: jnp.ndarray
     def __init__(self, n: int):
         assert n >= 1, "number of points must be at least 1"
-        x, w, theta = compute_gl_points(n)
+        x, w, _ = compute_gl_points(n)
         if n % 2 == 0:
-            self.x = jnp.hstack([x[::-1], x])
+            self.x = jnp.hstack([-x[::-1], x])
             self.w = jnp.hstack([w[::-1], w])
-            self.theta = jnp.hstack([theta[::-1], theta])
         else:
-            self.x = jnp.hstack([x[::-1], x[1:]])
+            self.x = jnp.hstack([-x[::-1], x[1:]])
             self.w = jnp.hstack([w[::-1], w[1:]])
-            self.theta = jnp.hstack([theta[::-1], theta[1:]])
             
 if __name__ == '__main__':
     def test_gl(n):
-        gl = GL_Integrator(n)
+        gl = FastGL(n)
         if np.allclose(gl.w, np.polynomial.legendre.leggauss(n)[1]):
             print(f"Success! GL_Integrator({n}) has correct weights.")
         else:
