@@ -7,7 +7,7 @@ import numpy as np
 
 from glquad import GLQuad
 
-# @partial(jax.jit, static_argnums=(0,1,2))
+@partial(jax.jit, static_argnums=(0,1,2))
 def qtt(lmax, rlmin, rlmax, ucl, ocl):
     ilmax = len(ucl) - 1
     
@@ -33,7 +33,6 @@ def qtt(lmax, rlmin, rlmax, ucl, ocl):
     
     return 1/(np.pi * llp1 * (nlpp_term_1 + nlpp_term_2))
 
-#%%
 if __name__ == '__main__':
     cltt = np.arange(1, 102, dtype=np.float64)
     nltt = np.zeros_like(cltt)
@@ -44,7 +43,14 @@ if __name__ == '__main__':
     print(f"{rtt=}")
 
     import pytempura as tp
-    print(tp.norm_lens.qtt(lmax_p, 1, lmax_p, ucl, ucl, ocl)[0])
+    from matplotlib import pyplot as plt
+    rtt_tp = tp.norm_lens.qtt(lmax_p, 1, lmax_p, ucl, ucl, ocl)[0]
 
+    plt.figure()
+    plt.plot(np.abs(rtt - rtt_tp)/rtt_tp, label="(jax - tp)/tp")
+    plt.legend()
+    plt.yscale('log')
+    plt.xlim(left=1)
+    plt.show() 
 
-# %%
+    # agreement within rtol=1e-9
