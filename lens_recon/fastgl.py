@@ -25,22 +25,21 @@ def besseljzero(k):
         21.2116366298792589590783933505, 24.3524715307493027370579447632,
         27.4934791320402547958772882346, 30.6346064684319751175495789269,
         33.7758202135735686842385463467, 36.9170983536640439797694930633
-    ])
+    ], dtype=jnp.float64)
     
     def compute_large_k(k):
-        z = jnp.pi * (k - 0.25)
+        z = np.pi * (k - 0.25)
         r = 1.0 / z
         r2 = r * r
         
         # Coefficients in reverse order (highest degree first)
         coeffs = jnp.array([
-            2092163573./82575360,
-            -6277237./3440640,
-            3779./15360,
-            -31./384,
+            2092163573./82575360.,
+            -6277237./3440640.,
+            3779./15360.,
+            -31./384.,
             0.125,
-            0.0,  # constant term
-        ])
+        ], dtype=jnp.float64)
         
         return z + r * jnp.polyval(coeffs, r2)
     
@@ -55,7 +54,7 @@ def besselj1squared(k):
         0.0231591218246913922652676382178, 0.0207838291222678576039808057297,
         0.0188504506693176678161056800214, 0.0172461575696650082995240053542,
         0.0158935181059235978027065594287
-    ])
+    ], dtype=jnp.float64)
     
     def compute_large_k(k):
         x = 1.0 / (k - 0.25)
@@ -69,7 +68,7 @@ def besselj1squared(k):
             -0.303380429711290253026202643516e-3,
             0.0,  # no x^2 term
             0.202642367284675542887758926420   # constant term
-        ])
+        ], dtype=jnp.float64)
         
         return x * jnp.polyval(coeffs, x2)
     
@@ -97,7 +96,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         -0.148809523713909147898955880165e-3,
         0.416666666665193394525296923981e-2,
         -0.416666666666662959639712457549e-1
-    ])
+    ], dtype=jnp.float64)
     
     SF2_coeffs = jnp.array([
         2.20639421781871003734786884322e-9,
@@ -107,7 +106,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         0.282116886057560434805998583817e-3,
         -0.209022248387852902722635654229e-2,
         0.815972221772932265640401128517e-2
-    ])
+    ], dtype=jnp.float64)
     
     SF3_coeffs = jnp.array([
         -2.97058225375526229899781956673e-8,
@@ -117,7 +116,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         -0.251395293283965914823026348764e-3,
         0.128654198542845137196151147483e-2,
         -0.416012165620204364833694266818e-2
-    ])
+    ], dtype=jnp.float64)
     
     WSF1_coeffs = jnp.array([
         -2.20902861044616638398573427475e-14,
@@ -130,7 +129,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         0.436507936507598105249726413120e-2,
         -0.305555555555553028279487898503e-1,
         0.833333333333333302184063103900e-1
-    ])
+    ], dtype=jnp.float64)
     
     WSF2_coeffs = jnp.array([
         3.63117412152654783455929483029e-12,
@@ -142,7 +141,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         -0.407297185611335764191683161117e-3,
         0.268959435694729660779984493795e-2,
         -0.111111111111214923138249347172e-1
-    ])
+    ], dtype=jnp.float64)
     
     WSF3_coeffs = jnp.array([
         2.01826791256703301806643264922e-9,
@@ -154,7 +153,7 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
         -0.105646050254076140548678457002e-3,
         -0.947969308958577323145923317955e-4,
         0.656966489926484797412985260842e-2
-    ])
+    ], dtype=jnp.float64)
     
     # Evaluate polynomials
     SF1T = jnp.polyval(SF1_coeffs, x)
@@ -209,12 +208,22 @@ class FastGL:
 if __name__ == '__main__':
     def test_gl(n):
         gl = FastGL(n)
-        if np.allclose(gl.w, np.polynomial.legendre.leggauss(n)[1]):
+        if np.allclose(gl.w, np.polynomial.legendre.leggauss(n)[1], rtol=1e-8):
             print(f"Success! GL_Integrator({n}) has correct weights.")
         else:
             print(f"Failure! GL_Integrator({n}) has incorrect weights.")
+        if np.allclose(gl.x, np.polynomial.legendre.leggauss(n)[0], rtol=1e-8):
+            print(f"Success! GL_Integrator({n}) has correct x.")
+        else:
+            print(f"Failure! GL_Integrator({n}) has incorrect x.")
+            print(f"{(gl.x - np.polynomial.legendre.leggauss(n)[0])=}")
+    test_gl(101)
+    test_gl(200)
+    test_gl(301)
     test_gl(501)
-    test_gl(1001)
+    test_gl(1000)
     test_gl(1501)
     test_gl(2000)
     test_gl(2345)
+
+# %%
