@@ -25,3 +25,7 @@ cf = Wignerd.cf_from_cl(s1, s2, lmax, cl, costheta)
 ### test cl_from_cf
 weights = ones(length(costheta))
 cl_recon = Wignerd.cl_from_cf(s1, s2, lmax, cf, costheta, weights)
+
+###
+gl = Wignerd.glquad(10000)
+gl.w

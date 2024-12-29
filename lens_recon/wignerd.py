@@ -1,17 +1,15 @@
-#%%
 import jax
 jax.config.update("jax_enable_x64", True)
 
-from jax import numpy as jnp
+from jax import numpy as jnp, debug
 import numpy as np
 from functools import partial
 
-@partial(jax.jit, inline=True)
+# @partial(jax.jit, inline=True)
 def alpha_f(l: jax.Array, s1: int, s2: int) -> jax.Array:
     return jnp.where((l <= jnp.abs(s1)) | (l <= jnp.abs(s2)), 0.0, 
                      jnp.sqrt((l**2 - s1**2)*(l**2 - s2**2))/l)
 
-@jax.jit
 def wigd_init(s1: int, s2: int, cos_theta: jax.Array) -> jax.Array:
     # Handle sign based on s1 + s2 parity
     s12sign = jnp.where(((s1 + s2) % 2) == 1, -1.0, 1.0)
@@ -37,11 +35,9 @@ def wigd_init(s1: int, s2: int, cos_theta: jax.Array) -> jax.Array:
         lambda i, v: v*jnp.sqrt((s2+abs_s1+i)/i), 
         A
     )
-
     # Calculate wigd
-    return s2, A * ((1 + cos_theta)/2)**((s2 + s1)/2) * ((1 - cos_theta)/2)**((s2 - s1)/2)
+    return s2, A * ((1.0 + cos_theta)/2.0)**((s2 + s1)/2.0) * ((1.0 - cos_theta)/2.0)**((s2 - s1)/2.0)
 
-@jax.jit
 def wigd_rec(l, s1, s2, cos_theta, wigd_hi, wigd_lo):
     """Recursive step for Wigner d."""
     alpha_hi = alpha_f(l + 1, s1, s2)
@@ -49,12 +45,12 @@ def wigd_rec(l, s1, s2, cos_theta, wigd_hi, wigd_lo):
 
     beta = jnp.where((s1 == 0) | (s2 == 0), 0.0, (s1 * s2)/(l * (l + 1)))
     wigd_new = ((2*l + 1)*(cos_theta - beta) * wigd_hi - alpha_lo*wigd_lo) / alpha_hi
-
     return wigd_new, wigd_hi
 
 @partial(jax.jit, static_argnums=(4, 5, 6))
-def cf_from_cl(s1, s2, cl, cos_theta, lmax, prefactor=False, lmin=0):
+def cf_from_cl(s1, s2, cl, cos_theta, lmax=None, prefactor=False, lmin=0):
     """Calculate ∑ₗ cl d_{s1,s2}^l"""
+    if lmax is None: lmax = len(cl) - 1
     l0, wigd_hi = wigd_init(s1, s2, cos_theta)
     wigd_lo = jnp.zeros_like(cos_theta)
 
@@ -64,7 +60,7 @@ def cf_from_cl(s1, s2, cl, cos_theta, lmax, prefactor=False, lmin=0):
     def loop_body(carry):
         l, wigd_hi, wigd_lo, cf = carry
         wigd_hi, wigd_lo = wigd_rec(l, s1, s2, cos_theta, wigd_hi, wigd_lo)
-        l += 1
+        l = l + 1
         fac = (2*l+1)/(4*jnp.pi) if prefactor else 1.0
         cf = cf + jnp.where(
             (l >= lmin),
@@ -88,7 +84,7 @@ def cl_from_cf(s1, s2, cf, cos_theta, weights, lmax):
     l0, wigd_hi = wigd_init(s1, s2, cos_theta)
     wigd_hi = wigd_hi * weights
     wigd_lo = jnp.zeros_like(cos_theta)
-    cl = jnp.zeros(lmax + 1)
+    cl = jnp.zeros(lmax + 1, dtype=jnp.float64)
 
     cl = cl.at[l0].set(
         jnp.where(l0 <= lmax, jnp.sum(cf * wigd_hi), 0.0)
@@ -109,7 +105,6 @@ def cl_from_cf(s1, s2, cf, cos_theta, weights, lmax):
     _, _, _, cl = jax.lax.while_loop(loop_cond, loop_body, init_state)
     return cl
 
-#%%
 # Example usages
 if __name__ == "__main__":
     s1, s2 = 1, 2
@@ -119,6 +114,7 @@ if __name__ == "__main__":
 
     cos_theta = np.array([-0.75, -0.5 ,-0.25, 0.25, 0.5, 0.75])
     l0, wigd_hi = wigd_init(s1, s2, np.array(cos_theta))
+    print(f"{l0=}, {wigd_hi=}")
     assert np.allclose(
         wigd_hi,
         [0.08267973, 0.21650635, 0.36309219, 0.60515365, 0.64951905, 0.5787581])
@@ -145,4 +141,6 @@ if __name__ == "__main__":
     assert np.allclose(
         cl_recon,
         [0.0, 0.0, 0.08558917001267696, -0.8918690803928095, -1.3643483186273897, -0.7240572707990893, -0.6074739860830027, 1.172257045428006, 0.5797840225510533, 2.2034783702814273, 1.1270394245456616])
+
+
 # %%
