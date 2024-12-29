@@ -1,11 +1,11 @@
 import jax
 jax.config.update("jax_enable_x64", True)
 
-from jax import numpy as jnp, debug
+from jax import numpy as jnp
 import numpy as np
 from functools import partial
 
-# @partial(jax.jit, inline=True)
+@partial(jax.jit, inline=True)
 def alpha_f(l: jax.Array, s1: int, s2: int) -> jax.Array:
     return jnp.where((l <= jnp.abs(s1)) | (l <= jnp.abs(s2)), 0.0, 
                      jnp.sqrt((l**2 - s1**2)*(l**2 - s2**2))/l)
@@ -48,13 +48,13 @@ def wigd_rec(l, s1, s2, cos_theta, wigd_hi, wigd_lo):
     return wigd_new, wigd_hi
 
 @partial(jax.jit, static_argnums=(4, 5, 6))
-def cf_from_cl(s1, s2, cl, cos_theta, lmax=None, prefactor=False, lmin=0):
+def cf_from_cl(s1, s2, cl, cos_theta, lmax=None, lmin=0, prefactor=False):
     """Calculate ∑ₗ cl d_{s1,s2}^l"""
     if lmax is None: lmax = len(cl) - 1
     l0, wigd_hi = wigd_init(s1, s2, cos_theta)
     wigd_lo = jnp.zeros_like(cos_theta)
 
-    fac = (2*l0+1)/(4*jnp.pi) if prefactor else 1.0
+    fac = (2*l0+1)/(4*np.pi) if prefactor else 1.0
     cf = jnp.where((l0 >= lmin) & (l0 <= lmax), cl[l0] * wigd_hi * fac, jnp.zeros_like(cos_theta))
 
     def loop_body(carry):
