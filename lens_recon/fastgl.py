@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax import jit
 from typing import Tuple
 from dataclasses import dataclass
+from functools import partial
 
 # Modified versions of the FastGL code
 # by Ignace Bogaert. The code is available at
@@ -178,7 +179,6 @@ def calc_gl_bogaert(n: int, k0: int) -> Tuple[float, float, float]:
             weight,
             jnp.where(k == k0, theta, jnp.pi-theta))
 
-from functools import partial
 
 @partial(jax.jit, static_argnums=(0,))
 def compute_gl_points(n: int):
