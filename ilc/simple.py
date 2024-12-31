@@ -1,9 +1,18 @@
+#%%
 import numpy as np
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from functools import partial
 import warnings
-from jax.scipy import interpolate
+from scipy import interpolate
+from contextlib import contextmanager
+
+@contextmanager
+def nowarn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        yield
 
 class constants:
     h = 6.62607015e-34  # Planck constant
@@ -48,7 +57,9 @@ class spectra:
         x = constants.h * nu / constants.k_B / T
         return 2 * constants.h * nu**3 / constants.c**2 / jnp.expm1(x)
 
-    dB_dT = jax.grad(blackbody, argnums=1)
+    def dB_dT(nu, T):
+        x = constants.h * nu / constants.k_B / T
+        return spectra.blackbody(nu, T) * x * jnp.exp(x) / (T * (jnp.exp(x) - 1))
 
     def dB_dTRJ(nu):
         return 2 * nu**2 * constants.k_B / constants.c**2
@@ -76,10 +87,9 @@ class spectra:
     
 class angular_spectra:
     def _build_tsz(template):
-        l, dl = np.loadtxt(template, unpack=True)
+        l, dl = np.loadtxt(template, unpack=True, dtype=jnp.float64)
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = cl[1] = 0
         cl_f = interpolate.interp1d(l, cl, kind='linear', fill_value='extrapolate') 
         def tsz_f(nu1, nu2, l, a_tsz=1.5, nu_ref=150e9):
             return a_tsz * cl_f(l) * spectra.tsz(nu1) * spectra.tsz(nu2) / spectra.tsz(nu_ref)**2
@@ -87,10 +97,9 @@ class angular_spectra:
     tsz = _build_tsz("data/tSZ_template.txt")
 
     def _build_ksz(template):
-        l, dl = np.loadtxt(template, unpack=True)
+        l, dl = np.loadtxt(template, unpack=True, dtype=jnp.float64)
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
         cl_f = interpolate.interp1d(l, cl, kind='linear', fill_value='extrapolate')
         def ksz_f(nu1, nu2, l, a_ksz=1.5):
             return a_ksz * cl_f(l)
@@ -98,11 +107,10 @@ class angular_spectra:
     ksz = _build_ksz("data/kSZ_template.txt")
 
     def _build_tsz_x_cib(template):
-        l, dl = np.loadtxt(template, unpack=True)
+        l, dl = np.loadtxt(template, unpack=True, dtype=jnp.float64)
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
-        cl_f = interpolate.interp1d(l, cl, kind='linear', fill_value='extrapolate')
+        cl_f = interpolate.interp1d(l, cl, kind='linear', fill_value='extrapolate') 
         def tsz_x_cib_f(nu1, nu2, l, xi=0.2, a_tsz=4.0, a_cib=5.7, beta_cib=2.1, Td=9.7, nu_ref=150e9):
             return \
             -2*xi*jnp.sqrt(a_tsz * a_cib)*cl_f(l) * \
@@ -110,21 +118,19 @@ class angular_spectra:
                  spectra.tsz(nu2)*spectra.cib_poisson(nu1, beta=beta_cib, Td=Td)) / \
             (2 * spectra.tsz(nu_ref) * spectra.cib_poisson(nu_ref, beta=beta_cib, Td=Td))
         return tsz_x_cib_f
-    tsz_x_cib = _build_tsz_x_cib("data/tSZ_x_CIB_template.txt")
+    tsz_x_cib = _build_tsz_x_cib("data/minus_tSZ_CIB_template.txt")
 
     def cib_poisson(nu1, nu2, l, a_cib=7.0, Td=9.7, beta=2.1, nu_ref=150e9):
         dl = a_cib * (l/3000)**2
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
         return cl * spectra.cib(nu1, beta=beta, Td=Td) * spectra.cib(nu2, beta=beta, Td=Td) / spectra.cib(nu_ref, beta=beta, Td=Td)**2
 
-    def cib_clustered(nu1, nu2, l, a_cib=5.7, n=1.2, Td=9.7, beta=2.1):
+    def cib_clustered(nu1, nu2, l, a_cib=5.7, n=1.2, Td=9.7, beta=2.1, nu_ref=150e9):
         dl = a_cib * (l/3000)**(2-n)
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
-        return cl * spectra.cib(nu1, beta=beta, Td=Td) * spectra.cib(nu2, beta=beta, Td=Td)
+        return cl * spectra.cib(nu1, beta=beta, Td=Td) * spectra.cib(nu2, beta=beta, Td=Td) / spectra.cib(nu_ref, beta=beta, Td=Td)**2
 
     def cib(nu1, nu2, l, cibp_cfg={}, cibc_cfg={}):
         return angular_spectra.cib_poisson(nu1, nu2, l, **cibp_cfg) + angular_spectra.cib_clustered(nu1, nu2, l, **cibc_cfg)
@@ -133,25 +139,16 @@ class angular_spectra:
         dl = a_s * (l/3000)**2
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
         return cl * spectra.radio_poisson(nu1, alpha_s=alpha_s) * spectra.radio_poisson(nu2, alpha_s=alpha_s) / spectra.radio_poisson(nu_ref, alpha_s=alpha_s)**2
 
     def galactic_dust(nu1, nu2, l, a_d=1.7, alpha_d=3.8, nu_ref=150e9):
         dl = a_d * (l/3000)**2
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
-            cl[0] = 0
         return cl * spectra.galactic_dust(nu1, alpha_d=alpha_d) * spectra.galactic_dust(nu2, alpha_d=alpha_d) / spectra.galactic_dust(nu_ref, alpha_d=alpha_d)**2
 
-# ======
-# utils
-# ======
 
-def nowarn():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        yield
-
+#%%
 if __name__ == '__main__':
     from pysm3 import units as u
 
@@ -181,5 +178,68 @@ if __name__ == '__main__':
     c = (1 * u.K_RJ).to(u.K_CMB, equivalencies=u.cmb_equivalencies(150 * u.GHz)).value
     test_eq(c, conversions.KRJ_to_KCMB(150e9, 1), "K_RJ to K_CMB")
 
+    # %%
+    # =======================
+    # test spectra
+    # =======================
 
+    nu = np.arange(10, 1000, 10) * 1e9
+    nu_ref = 150e9
+    with plt.rc_context({
+        'font.size': 14,
+        'figure.dpi': 200,
+    }):
+        plt.plot(nu/1e9, spectra.tsz(nu)/spectra.tsz(nu_ref), label="tSZ")
+        plt.plot(nu/1e9, spectra.cib_poisson(nu)/spectra.cib_poisson(nu_ref), label="CIB Poisson")
+        plt.plot(nu/1e9, spectra.cib_clustered(nu)/spectra.cib_clustered(nu_ref), label="CIB Clustered")
+        plt.plot(nu/1e9, spectra.radio_poisson(nu)/spectra.radio_poisson(nu_ref), label="Radio Poisson")
+        plt.plot(nu/1e9, spectra.galactic_dust(nu)/spectra.galactic_dust(nu_ref), label="Galactic Dust")
+        plt.plot(nu/1e9, spectra.cmb_iso(nu)/spectra.cmb_iso(nu_ref), label="CMB Iso")
+        plt.plot(nu/1e9, spectra.cmb_ani(nu)/spectra.cmb_ani(nu_ref), label="CMB Ani")
+        plt.plot(nu/1e9, spectra.ksz(nu)/spectra.ksz(nu_ref), label="kSZ")
+        plt.xlabel("Frequency (GHz)")
+        plt.ylabel("Spectra")
+        plt.title("Spectra normalized to 150 GHz")
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1)
 
+    # %%
+    # =======================
+    # test angular spectra
+    # =======================
+    from matplotlib import pyplot as plt
+    from orphics import cosmology
+    theory = cosmology.default_theory()
+
+    nu1, nu2 = 150e9, 150e9
+    l = jnp.arange(3000)
+    tsz = angular_spectra.tsz(nu1, nu2, l)
+    ksz = angular_spectra.ksz(nu1, nu2, l)
+    tsz_x_cib = angular_spectra.tsz_x_cib(nu1, nu2, l)
+    cib_poisson = angular_spectra.cib_poisson(nu1, nu2, l)
+    cib_clustered = angular_spectra.cib_clustered(nu1, nu2, l)
+    radio_poisson = angular_spectra.radio_poisson(nu1, nu2, l)
+    cltt = theory.lCl('TT', l)
+    pre = l**2/(2*np.pi)
+    with plt.rc_context({
+        'font.size': 14,
+        'figure.dpi': 200,
+    }):
+        plt.figure(figsize=(8,6), dpi=150)
+        plt.plot(l, tsz*pre, label="tsz")
+        plt.plot(l, ksz*pre, label="ksz")
+        plt.plot(l, tsz_x_cib*pre, label="tsz_x_cib")
+        plt.plot(l, cib_poisson*pre, label="cib_poisson")
+        plt.plot(l, cib_clustered*pre, label="cib_clustered")
+        plt.plot(l, radio_poisson*pre, label="radio_poisson") 
+        plt.plot(l, cltt*pre, label="TT")
+        plt.xlabel(r"$\ell$")
+        plt.ylabel(r"$\ell^2 C_\ell / 2\pi$")
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.xlim(left=5)
+        plt.legend()
+
+    
+# %%
