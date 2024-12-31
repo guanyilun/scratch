@@ -1,4 +1,3 @@
-#%%
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -178,7 +177,6 @@ def kernel_Sm(lmax, rlmin, rlmax, A, B):
     term2_s3_m1 = glq.cf_from_cl(3, -1, B*sqrt_term, lmin=rlmin, lmax=rlmax, prefactor=True)
     term2_s3_p1 = glq.cf_from_cl(3, 1, B*sqrt_term, lmin=rlmin, lmax=rlmax, prefactor=True)
     
-    # Combining terms with coefficient 1/(64π)
     A = (glq.cl_from_cf(1, -1, term1_m2*term2_s1_m1, lmax=lmax) * (-1) +
          glq.cl_from_cf(1, 1, term1_p2*term2_s1_p1, lmax=lmax) * (1) +
          glq.cl_from_cf(1, 1, term1_m2*term2_s3_m1, lmax=lmax) * (-2) +
@@ -241,7 +239,6 @@ def kernel_Gp(lmax, rlmin, rlmax, A, B):
     term3_l2 = glq.cf_from_cl(2, 1, B2 * jnp.sqrt((l2-1)*(l2+2)), lmin=rlmin, lmax=rlmax, prefactor=True)
     term4_l2 = glq.cf_from_cl(3, 2, B2 * jnp.sqrt((l2-2)*(l2+3)), lmin=rlmin, lmax=rlmax, prefactor=True)
 
-    # Combining terms for final cl_from_cf calls
     result1 = glq.cl_from_cf(1, -1, term1_l1*term1_l2 + term3_l1*term4_l2 - term1_l1*term2_l2 - term3_l1*term2_l2, lmax=lmax)
     result2 = glq.cl_from_cf(1, 1, -term2_l1*term1_l2 - term2_l1*term2_l2 - term4_l1*term3_l2 + term4_l1*term4_l2, lmax=lmax)
     
@@ -270,7 +267,6 @@ def kernel_Gm(lmax, rlmin, rlmax, A, B):
     term2_p2 = glq.cf_from_cl(3, 2, f3_2, lmin=rlmin, lmax=rlmax, prefactor=True)
     term2_m2 = glq.cf_from_cl(3, -2, f3_2, lmin=rlmin, lmax=rlmax, prefactor=True)
     
-    # Final combinations
     A = glq.cl_from_cf(1, -1, term1_m2*term2_m2 + term1_p3*term2_m1 + 
                               term1_p2*term2_m1 + term1_m3*term2_m2, lmax=lmax)
     B = glq.cl_from_cf(1, 1, term1_m3*term2_m2 + term1_m2*term2_p1 + 
@@ -305,7 +301,7 @@ def kernel_Gx(lmax, rlmin, rlmax, A, B):
 
 
 def qtt_simple(lmax, rlmin, rlmax, ucl, ocl):
-    glq = GLQuad(int((3*lmax + 1)/2))  # Assuming GLQuad is imported
+    glq = GLQuad(int((3*lmax + 1)/2))
     ucl, ocl = ucl['TT'], ocl['TT']
     
     ell = jnp.arange(0, len(ucl))
@@ -324,8 +320,6 @@ def qtt_simple(lmax, rlmin, rlmax, ucl, ocl):
     
     return 1/(np.pi * llp1 * (nlpp_term_1 + nlpp_term_2))
 
-
-#%%
 if __name__ == '__main__':
     import pytempura as tp
     from matplotlib import pyplot as plt
@@ -341,7 +335,6 @@ if __name__ == '__main__':
     rtt_tp = tp.norm_lens.qtt(lmax_p, 1, lmax_p, ucl['TT'], ucl['TT'], ocl['TT'])[0]
 
     plt.figure()
-    # plt.plot(np.abs(rtt - rtt_tp)/rtt_tp, label="(jax - tp)/tp")
     plt.plot(rtt_simple, label="simple")
     plt.plot(rtt_tp, label="tp")
     plt.plot(rtt_kernel, label="jax kernel")
@@ -351,5 +344,3 @@ if __name__ == '__main__':
     plt.show() 
 
     # agreement within rtol=1e-9
-
-# %%
