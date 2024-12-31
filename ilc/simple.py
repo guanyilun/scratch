@@ -7,6 +7,7 @@ from functools import partial
 import warnings
 from scipy import interpolate
 from contextlib import contextmanager
+import itertools
 
 @contextmanager
 def nowarn():
@@ -87,7 +88,7 @@ class spectra:
     
 class angular_spectra:
     def _build_tsz(template):
-        l, dl = np.loadtxt(template, unpack=True, dtype=jnp.float64)
+        l, dl = np.loadtxt(template, unpack=True, dtype=np.float64)
         with nowarn():
             cl = dl * 2 * np.pi / l / (l+1)
         cl_f = interpolate.interp1d(l, cl, kind='linear', fill_value='extrapolate') 
@@ -147,10 +148,21 @@ class angular_spectra:
             cl = dl * 2 * np.pi / l / (l+1)
         return cl * spectra.galactic_dust(nu1, alpha_d=alpha_d) * spectra.galactic_dust(nu2, alpha_d=alpha_d) / spectra.galactic_dust(nu_ref, alpha_d=alpha_d)**2
 
+def cmb_ilc_weights_minvar(freqs, l, components):
+    c = np.zeros((len(l), len(freqs), len(freqs)))
+    for (i, j) in itertools.product(range(len(freqs)), range(len(freqs))):
+        nu1, nu2 = freqs[i], freqs[j]
+        for comp in components:
+            c[:, i, j] += comp(nu1, nu2, l)
+    cinv = np.linalg.inv(c)
+    w = cinv.sum(axis=2) / cinv.sum(axis=(1, 2))[:, None]
+    return w
 
+     
 #%%
 if __name__ == '__main__':
     from pysm3 import units as u
+    from matplotlib import pyplot as plt
 
     def test_eq(a, b, name="Test"):
         assert np.allclose(a, b), f"{name} failed: {a} != {b}"
@@ -213,7 +225,7 @@ if __name__ == '__main__':
     theory = cosmology.default_theory()
 
     nu1, nu2 = 150e9, 150e9
-    l = jnp.arange(3000)
+    l = jnp.arange(500, 6000)
     tsz = angular_spectra.tsz(nu1, nu2, l)
     ksz = angular_spectra.ksz(nu1, nu2, l)
     tsz_x_cib = angular_spectra.tsz_x_cib(nu1, nu2, l)
@@ -222,11 +234,12 @@ if __name__ == '__main__':
     radio_poisson = angular_spectra.radio_poisson(nu1, nu2, l)
     cltt = theory.lCl('TT', l)
     pre = l**2/(2*np.pi)
+
     with plt.rc_context({
         'font.size': 14,
         'figure.dpi': 200,
     }):
-        plt.figure(figsize=(8,6), dpi=150)
+        plt.figure(figsize=(6,4))
         plt.plot(l, tsz*pre, label="tsz")
         plt.plot(l, ksz*pre, label="ksz")
         plt.plot(l, tsz_x_cib*pre, label="tsz_x_cib")
@@ -238,8 +251,33 @@ if __name__ == '__main__':
         plt.ylabel(r"$\ell^2 C_\ell / 2\pi$")
         plt.xscale('log')
         plt.yscale('log')
-        plt.xlim(left=5)
-        plt.legend()
-
+        plt.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1)
+        plt.title("Angular Spectra at 150 GHz")
     
+    # %%
+    # =======================
+    # test ILC
+    # =======================
+    freqs = np.array([93, 145, 225, 278]) * 1e9
+    l = np.arange(500, 6000, 50)
+    components = [
+        angular_spectra.tsz, angular_spectra.ksz, angular_spectra.tsz_x_cib, 
+        angular_spectra.cib_poisson, angular_spectra.cib_clustered, 
+        angular_spectra.radio_poisson, angular_spectra.galactic_dust
+    ]
+    w = cmb_ilc_weights_minvar(freqs, l, components)
+
+    with plt.rc_context({
+        'font.size': 14,
+        'figure.dpi': 200,
+    }):
+        plt.figure(figsize=(6,4))
+        for i, freq in enumerate(freqs):
+            plt.plot(l, w[:, i], label=f"{freq/1e9} GHz")
+        plt.xlabel(r"$\ell$")
+        plt.ylabel("Weights")
+        plt.xscale('log')
+        plt.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1)
+        plt.title("ILC Weights")
+
 # %%
