@@ -4,3 +4,7 @@ Test frequency spectra output:
 
 Test angular power spectra:
 ![image](https://github.com/user-attachments/assets/52018f90-9cb0-4435-8021-f855179e2e7d)
+
+Test simple ILC:
+![image](https://github.com/user-attachments/assets/de93c834-4659-425a-988e-e76b405235dd)
+
