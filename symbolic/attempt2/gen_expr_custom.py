@@ -134,32 +134,32 @@ class EGraphVisualizer:
 
 
 #%%
-import os
+if __name__ == '__main__':
+    import os
 
-x = Symbol('x')
-expr = Op('+', 
-    Op('*', 
+    x = Symbol('x')
+    expr = Op('+', 
         Op('*', 
-            Number(2), 
-            Op('*', Number(3), x)), 
-        Op('+', 
-            Op('+', 
-                Op('^', x, Number(2)), 
+            Op('*', 
+                Number(2), 
                 Op('*', Number(3), x)), 
-            Number(2))), 
-    Op('^', x, Number(2)))
+            Op('+', 
+                Op('+', 
+                    Op('^', x, Number(2)), 
+                    Op('*', Number(3), x)), 
+                Number(2))), 
+        Op('^', x, Number(2)))
 
-# Create the EGraph and digest the expression
-eg = EGraph()
-eg.digest(expr)
+    # Create the EGraph and digest the expression
+    eg = EGraph()
+    eg.digest(expr)
 
-# Visualize the EGraph
-visualizer = EGraphVisualizer(eg)
-egraph_viz = visualizer.visualize()
-egraph_viz.render('egraph', format='pdf')
+    eg.apply_rule(Op('*', x, x), Op('^', x, Number(2)))
 
-# Clean up and open the PDF
-import os
-os.system('rm egraph; open egraph.pdf')
+    # Visualize the EGraph
+    visualizer = EGraphVisualizer(eg)
+    egraph_viz = visualizer.visualize()
+    egraph_viz.render('egraph', format='pdf')
 
-# %%
+    # Clean up and open the PDF
+    os.system('rm egraph; open egraph.pdf')
