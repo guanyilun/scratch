@@ -47,30 +47,38 @@ def create_padding_mask(seq, pad_idx=0):
 
 
 class MathTransformer(nn.Module):
-    def __init__(self, vocab_size, d_model=128, nhead=8, num_layers=4, max_len=100):
+    def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6, max_len=100, dropout=0.1):
         super().__init__()
         self.d_model = d_model
-
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len)
+        
+        # Add layer normalization before transformer
+        self.norm = nn.LayerNorm(d_model)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=d_model * 4,
-            batch_first=True
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True  # Pre-norm architecture
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Add layer normalization before final projection
+        self.final_norm = nn.LayerNorm(d_model)
         self.fc_out = nn.Linear(d_model, vocab_size)
-
+        
     def forward(self, x):
-        batch_size, seq_len = x.shape
-        padding_mask = create_padding_mask(x, 0).to(x.device)
-        causal_mask = generate_square_subsequent_mask(seq_len).to(x.device)
-
+        padding_mask = create_padding_mask(x)
+        causal_mask = generate_square_subsequent_mask(x.size(1)).to(x.device)
+        
         x = self.embedding(x) * math.sqrt(self.d_model)
         x = self.pos_encoder(x)
+        x = self.norm(x)
         x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
+        x = self.final_norm(x)
         return self.fc_out(x)
     
 

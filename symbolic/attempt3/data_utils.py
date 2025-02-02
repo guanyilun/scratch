@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+import random
 
 
 def create_vocabulary():
@@ -11,24 +12,140 @@ def create_vocabulary():
     vocab = {token: idx for idx, token in enumerate(actions)}
     return vocab, actions
 
-
 class Tokenizer:
     def __init__(self):
-        self.vocab, self.actions = create_vocabulary()
-        self.idx_to_token = {token: idx for token, idx in self.vocab.items()}
-        self.vocab_size = len(self.vocab)
-        self.pad_token = ''
+        # Define the special tokens
+        self.special_tokens = {
+            '<pad>': 0,
+            '<start>': 1,
+            '<end>': 2,
+        }
         
-    def encode(self, sequence, add_start_end=True):
-        indices = [self.vocab[token] for token in sequence]
+        # Define operators, numbers, and parentheses
+        self.operators = ['+', '-', '*', '/']
+        self.numbers = [str(i) for i in range(1, 14)]  # '1' through '13'
+        self.parentheses = ['(', ')']
+        
+        # Create the vocabulary
+        self.vocab = {}
+        # First add special tokens
+        self.vocab.update(self.special_tokens)
+        # Then add operators, numbers, and parentheses
+        current_idx = len(self.special_tokens)
+        for token in self.operators + self.numbers + self.parentheses:
+            self.vocab[token] = current_idx
+            current_idx += 1
+            
+        # Create reverse mapping (index to token)
+        self.idx_to_token = {idx: token for token, idx in self.vocab.items()}
+        self.vocab_size = len(self.vocab)
+        self.pad_token = '<pad>'
+        self.actions = list(self.vocab.keys())
+        
+    def encode(self, sequence, add_start_end=True, pad_to_length=None):
+        """
+        Encode a sequence of tokens into indices.
+        
+        Args:
+            sequence: List of tokens or space-separated string
+            add_start_end: Whether to add start/end tokens
+            pad_to_length: Optional length to pad to
+            
+        Returns:
+            List of indices
+        """
+        # If input is a string, split it into tokens
+        if isinstance(sequence, str):
+            # Split by spaces but keep parentheses as separate tokens
+            tokens = []
+            current_token = ''
+            for char in sequence:
+                if char in [' ']:
+                    if current_token:
+                        tokens.append(current_token)
+                        current_token = ''
+                elif char in ['(', ')']:
+                    if current_token:
+                        tokens.append(current_token)
+                        current_token = ''
+                    tokens.append(char)
+                else:
+                    current_token += char
+            if current_token:
+                tokens.append(current_token)
+        else:
+            tokens = sequence
+            
+        # Convert tokens to indices
+        try:
+            indices = [self.vocab[token] for token in tokens]
+        except KeyError as e:
+            raise ValueError(f"Unknown token found: {e}. Valid tokens are: {list(self.vocab.keys())}")
+            
+        # Add start and end tokens if requested
         if add_start_end:
             indices = [self.vocab['<start>']] + indices + [self.vocab['<end>']]
+            
+        # Pad sequence if requested
+        if pad_to_length is not None:
+            indices = indices + [self.vocab[self.pad_token]] * (pad_to_length - len(indices))
+            
         return indices
     
     def decode(self, indices, skip_special_tokens=True):
-        if skip_special_tokens:
-            indices = [idx for idx in indices if idx not in [self.vocab['<start>'], self.vocab['<end>']]]
-        return [self.idx_to_token[idx] for idx in indices]
+        """
+        Decode a sequence of indices back into tokens.
+        
+        Args:
+            indices: List of indices
+            skip_special_tokens: Whether to skip special tokens in output
+            
+        Returns:
+            List of tokens
+        """
+        special_token_ids = set() if not skip_special_tokens else {
+            self.vocab[token] for token in ['<start>', '<end>', '<pad>']
+        }
+        
+        tokens = []
+        for idx in indices:
+            if idx not in special_token_ids:
+                tokens.append(self.idx_to_token[idx])
+                
+        return tokens
+    
+    def decode_to_string(self, indices, skip_special_tokens=True):
+        """
+        Decode indices to a formatted expression string.
+        
+        Args:
+            indices: List of indices
+            skip_special_tokens: Whether to skip special tokens
+            
+        Returns:
+            Formatted expression string
+        """
+        tokens = self.decode(indices, skip_special_tokens)
+        # Add spaces around operators but not around parentheses
+        formatted = ''
+        for i, token in enumerate(tokens):
+            if token in self.operators:
+                formatted += f' {token} '
+            elif token in self.parentheses:
+                formatted += token
+            else:
+                formatted += token
+        return formatted.strip()
+    
+    def get_vocab(self):
+        """Return the vocabulary dictionary."""
+        return self.vocab.copy()
+    
+    def get_vocab_size(self):
+        """Return the size of the vocabulary."""
+        return self.vocab_size
+
+
 
 
 class MathExpressionDataset(Dataset):
@@ -61,8 +178,6 @@ class MathExpressionDataset(Dataset):
             'target': torch.tensor(target_indices, dtype=torch.long)
         }
 
-
-import random
 
 def generate_math_expression(max_depth=3):
     """
@@ -102,9 +217,40 @@ def generate_math_expression(max_depth=3):
 
 
 if __name__ == '__main__':
-    vocab = create_vocabulary()
-    print(vocab)
+    # vocab = create_vocabulary()
+    # print(vocab)
 
-    for _ in range(100):
+    from tqdm import tqdm
+    tokenizer = Tokenizer()
+
+    expressions = []
+    for _ in tqdm(range(100_000)):
         expression = generate_math_expression(max_depth=4)
-        print(f"Generated expression: {expression}")
+        expressions.append(expression)
+    
+    # save to file
+    with open('data/math_expressions.txt', 'w') as f:
+        for expr in expressions:
+            f.write(expr + '\n')
+    
+    # # Test cases
+    # expressions = [
+    #     "1 + 2",
+    #     "(3 * 4) / 5",
+    #     "13 - (11 + 2)",
+    #     "7 * (8 + 9)"
+    # ]
+    
+    # print("Testing tokenizer:")
+    # print("-" * 50)
+    # for expr in expressions:
+    #     print(f"\nOriginal expression: {expr}")
+    #     # Encode
+    #     encoded = tokenizer.encode(expr)
+    #     print(f"Encoded: {encoded}")
+    #     # Decode
+    #     decoded = tokenizer.decode(encoded)
+    #     print(f"Decoded tokens: {decoded}")
+    #     # Decode to formatted string
+    #     formatted = tokenizer.decode_to_string(encoded)
+    #     print(f"Formatted expression: {formatted}")
