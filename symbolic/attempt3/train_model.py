@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,7 +10,7 @@ from data_utils import MathExpressionDataset, Tokenizer
 
 
 def train_model(model, train_loader, num_epochs, device, learning_rate=0.001):
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     model.train()
@@ -20,8 +23,7 @@ def train_model(model, train_loader, num_epochs, device, learning_rate=0.001):
             optimizer.zero_grad()
             outputs = model(inputs)  # Shape: [batch_size, seq_len, vocab_size]
             # Only get the output for the last position
-            last_output = outputs[:, -1, :]  # Shape: [batch_size, vocab_size]
-            loss = criterion(last_output, targets)
+            loss = criterion(outputs.view(-1, outputs.shape[-1]), targets.view(-1))
 
             loss.backward()
             optimizer.step()
@@ -52,7 +54,7 @@ def get_next_token_probabilities(model, sequence, tokenizer, max_len, device):
 
     # Pad sequence if necessary
     if len(input_indices) < max_len - 1:
-        input_indices = input_indices + tokenizer.encode(['']) * (max_len - 1 - seq_len)
+        input_indices = input_indices + [tokenizer.vocab['']] * (max_len - 1 - seq_len)
     else:
         # If sequence is too long, truncate it
         input_indices = input_indices[-(max_len - 1):]
@@ -60,13 +62,10 @@ def get_next_token_probabilities(model, sequence, tokenizer, max_len, device):
     # Prepare input tensor
     input_tensor = torch.tensor(input_indices, dtype=torch.long).unsqueeze(0).to(device)
 
-    padding_mask = torch.zeros((1, max_len - 1), dtype=torch.bool).to(device)
-    padding_mask[0, seq_len:] = True  # Mark padding positions
-
     # Get model prediction
     model.eval()
     with torch.no_grad():
-        output = model(input_tensor, mask=padding_mask)
+        output = model(input_tensor)
         probabilities = torch.softmax(output[0, seq_len-1], dim=0)  # YG: dim needs to be checked
 
     # Convert to list of (token, probability) pairs
@@ -81,6 +80,31 @@ def predict_next_token(model, sequence, vocab, max_len, device):
     return token_probs[0][0]  # Return the token with highest probability
 
 
+def rollout(model, sequence, tokenizer, max_len, device):
+    """
+    Generate a sequence of tokens by iteratively predicting the next token.
+
+    Args:
+        model: The trained transformer model
+        sequence: List of tokens representing the initial sequence
+        vocab: Dictionary mapping tokens to indices
+        max_len: Maximum sequence length
+        device: Device to run the model on
+        num_tokens: Number of tokens to generate
+
+    Returns:
+        List of tokens representing the generated sequence
+
+    """
+    generated_sequence = sequence.copy()
+    for _ in range(max_len - len(sequence)):
+        next_token = predict_next_token(model, generated_sequence, tokenizer, max_len, device)
+        if next_token == '':
+            break
+        generated_sequence.append(next_token)
+    return generated_sequence
+
+
 # Example usage
 if __name__ == "__main__":
     max_len = 50
@@ -90,7 +114,7 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tokenizer = Tokenizer()
 
-    torch.manual_seed(42)
+    # torch.manual_seed(42)
 
     # Create model
     model = MathTransformer(
@@ -101,8 +125,8 @@ if __name__ == "__main__":
 
     # Example training data (you would need to provide your own sequences)
     example_sequences = [
-        ['1', '+(', '2', '+)', '3'],
-        ['2', '*(', '3', '*)', '6'],
+        ['1', '(', '2', '+', '3', ')'],
+        ['2', '(', '3', '*', '2', ')'],
     ]
 
     # Create dataset and dataloader
@@ -113,7 +137,7 @@ if __name__ == "__main__":
     train_model(model, train_loader, num_epochs, device)
 
     # Example prediction
-    test_sequence = ['1', '+(', '2']
+    test_sequence = ['1', '+', '(', '2']
     predicted_token = predict_next_token(model, test_sequence, tokenizer, max_len, device)
     print(f'Input sequence: {test_sequence}')
     print(f'Predicted next token: {predicted_token}')
