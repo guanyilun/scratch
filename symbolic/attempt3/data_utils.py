@@ -146,8 +146,6 @@ class Tokenizer:
         return self.vocab_size
 
 
-
-
 class MathExpressionDataset(Dataset):
     def __init__(self, sequences, tokenizer, max_len):
         self.sequences = sequences

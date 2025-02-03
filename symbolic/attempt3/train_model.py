@@ -50,76 +50,78 @@ def train_model(model, train_loader, num_epochs, device, learning_rate=0.0001):
 
 
 def get_next_token_probabilities(model, sequence, tokenizer, max_len, device):
-    """
-    Get probability distribution over possible next tokens.
-
-    Args:
-        model: The trained transformer model
-        sequence: List of tokens representing the current sequence
-        vocab: Dictionary mapping tokens to indices
-        max_len: Maximum sequence length
-        device: Device to run the model on
-
-    Returns:
-        List of (token, probability) tuples, sorted by probability in descending order
-    """
-    # Convert sequence to indices
-    input_indices = tokenizer.encode(sequence)
+    """Get probability distribution over possible next tokens."""
+    input_indices = tokenizer.encode(sequence, add_start_end=True)  # Make sure to add start token
     seq_len = len(input_indices)
-
-    # Pad sequence if necessary
-    if len(input_indices) < max_len - 1:
-        input_indices = input_indices + [tokenizer.vocab['<pad>']] * (max_len - 1 - seq_len)
+    
+    # Handle sequence length
+    if seq_len >= max_len:
+        input_indices = input_indices[-(max_len-1):]  # Keep room for next prediction
     else:
-        # If sequence is too long, truncate it
-        input_indices = input_indices[-(max_len - 1):]
-
+        input_indices = input_indices + [tokenizer.vocab['<pad>']] * (max_len - 1 - seq_len)
+    
     # Prepare input tensor
     input_tensor = torch.tensor(input_indices, dtype=torch.long).unsqueeze(0).to(device)
-
+    
     # Get model prediction
     model.eval()
     with torch.no_grad():
         output = model(input_tensor)
-        seq_len = min(seq_len, max_len - 1)
-        probabilities = torch.softmax(output[0, seq_len-1], dim=0)  # YG: dim needs to be checked
-
-    # Convert to list of (token, probability) pairs
-    token_probs = [(a, p) for (a, p) in zip(tokenizer.actions, probabilities)]
-    token_probs.sort(key=lambda x: x[1], reverse=True)
-    return token_probs
-
-
-def predict_next_token(model, sequence, vocab, max_len, device):
-    """Get the most likely next token."""
-    token_probs = get_next_token_probabilities(model, sequence, vocab, max_len, device)
-    return token_probs[0][0]  # Return the token with highest probability
+        # Get probabilities for the next token
+        logits = output[0, -1]  # Take the last position
+        probabilities = torch.softmax(logits, dim=0)
+    
+    # Filter out special tokens if needed
+    token_probs = [(token, prob.item()) 
+                   for token, prob in zip(tokenizer.actions, probabilities)
+                   if token not in ['<pad>', '<start>']]  # Filter special tokens
+    
+    return sorted(token_probs, key=lambda x: x[1], reverse=True)
 
 
-def rollout(model, sequence, tokenizer, max_len, device):
-    """
-    Generate a sequence of tokens by iteratively predicting the next token.
+def predict_next_token(model, sequence, tokenizer, max_len, device, temperature=0.3):
+    """Get the next token using temperature sampling."""
+    token_probs = get_next_token_probabilities(model, sequence, tokenizer, max_len, device)
+    
+    # Apply temperature
+    probs = torch.tensor([prob for _, prob in token_probs])
+    probs = torch.softmax(torch.log(probs) / temperature, dim=0)
+    
+    # Sample from the distribution
+    next_token_idx = torch.multinomial(probs, 1).item()
+    return token_probs[next_token_idx][0]
 
-    Args:
-        model: The trained transformer model
-        sequence: List of tokens representing the initial sequence
-        vocab: Dictionary mapping tokens to indices
-        max_len: Maximum sequence length
-        device: Device to run the model on
-        num_tokens: Number of tokens to generate
 
-    Returns:
-        List of tokens representing the generated sequence
-
-    """
+def rollout(model, sequence, tokenizer, max_len, device, temperature=1.0, top_k=None):
+    """Generate a sequence with more controlled generation."""
     generated_sequence = sequence.copy()
+    
     for _ in range(max_len - len(sequence)):
-        next_token = predict_next_token(model, generated_sequence, tokenizer, max_len, device)
-        if next_token == '<end>':
+        next_token = predict_next_token(
+            model, 
+            generated_sequence,
+            tokenizer, 
+            max_len, 
+            device,
+            temperature=temperature
+        )
+        
+        # Stop conditions
+        if next_token == '<end>' or next_token == '<pad>':
             break
+            
+        # Validate mathematical expression
         generated_sequence.append(next_token)
+        
+        # Optional: Add basic validation
+        if len(generated_sequence) > 2:
+            # Check for consecutive operators
+            if (generated_sequence[-1] in tokenizer.operators and 
+                generated_sequence[-2] in tokenizer.operators):
+                generated_sequence.pop()  # Remove invalid token
+                continue
+    
     return generated_sequence
-
 
 # Example usage
 if __name__ == "__main__":
@@ -135,7 +137,7 @@ if __name__ == "__main__":
     }
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tokenizer = Tokenizer()
-    mode = 'train'
+    mode = 'test'
 
     # torch.manual_seed(42)
 
@@ -172,11 +174,11 @@ if __name__ == "__main__":
         ).to(device)
         model.load_state_dict(torch.load('data/math_transformer.pt'))
     
-
         # Example prediction
         test_sequence = ['1', '+', '(', '2']
-        predicted_token = predict_next_token(model, test_sequence, tokenizer, max_len, device)
+        predicted_token = predict_next_token(model, test_sequence, tokenizer, config['max_len'], device)
         print(f'Input sequence: {test_sequence}')
+
         # roll out
-        generated_sequence = rollout(model, test_sequence, tokenizer, max_len, device)
+        generated_sequence = rollout(model, test_sequence, tokenizer, config['max_len'], device)
         print(f'Generated sequence: {generated_sequence}')
