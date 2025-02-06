@@ -6,7 +6,7 @@ including Hubble parameter, energy densities, and neutrino-related quantities.
 """
 
 import numpy as np
-from scipy.special import zeta, legendre, roots_legendre
+from scipy.special import zeta, roots_legendre
 from scipy.interpolate import CubicSpline
 from dataclasses import dataclass
 from typing import Optional
@@ -14,9 +14,11 @@ from typing import Optional
 # Physical Constants
 class constants:
     zeta_3: float = zeta(3)  # Riemann ζ(3) for phase space integrals
-    km_s_Mpc_100: float = 2.1331196424576403e-33  # eV
-    G_natural: float = 6.708830858490363e-57
-    m_H: float = 9.382720881604904e8
+    # km_s_Mpc_100: float = 2.1331196424576403e-33  # eV
+    km_s_Mpc_100: float = 0.00033356409519815205  # Mpc^-1
+    # G_natural: float = 6.708830858490363e-57   # eV
+    G_natural: float = 2.7435866787007285e-115  # Mpc^-2
+    eV_natural: float = 1.5637383059878979e29  # [eV -> Mpc^-1]
 
 class CosmoParams:
     """
@@ -36,7 +38,7 @@ class CosmoParams:
         self.Omega_b = Omega_b
         self.Omega_c = Omega_c
         self.N_nu = N_nu
-        self.sum_m_nu = sum_m_nu
+        self.sum_m_nu = sum_m_nu * constants.eV_natural
 
         self.nq = nq
 
@@ -136,6 +138,7 @@ class NeutrinoDistribution:
         """Fermi-Dirac distribution for massless neutrinos"""
         gs = 2
         return gs / (2*np.pi)**3 / (np.exp(q/self.T_nu) + 1)
+
     def dlnf0_dlnq(self, q: np.ndarray) -> np.ndarray:
         """Logarithmic derivative of the distribution function"""
         return -q/self.T_nu / (1 + np.exp(-q/self.T_nu))

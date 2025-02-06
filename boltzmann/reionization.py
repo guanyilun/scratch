@@ -7,13 +7,13 @@ from scipy.interpolate import interp1d, CubicSpline
 
 
 # Unit conversion constants
-H0_NATURAL_UNIT_CONVERSION = 6.582119569509066e-16
-KELVIN_NATURAL_UNIT_CONVERSION = 11604.51812155008
+H0_NATURAL_UNIT_CONVERSION = 1.0292712505433898e14
+KELVIN_NATURAL_UNIT_CONVERSION = 7.421010329614507e-26
 
 class constants_nu:
-    sigma_T = 1.7084774406497884e-15
-    m_H = 9.382720881604904e8
-    m_e = 510998.9499961642
+    sigma_T = 6.986844838290931e-74
+    m_H = 1.4672120056958132e38
+    m_e = 7.990686324285964e34
 
 @dataclass
 class IonizationHistory:
@@ -102,7 +102,7 @@ class RECFAST:
 
     def __post_init__(self):
         # Set H₀ from background
-        self.HO = self.bg.params.H0 / H0_NATURAL_UNIT_CONVERSION
+        self.H0 = self.bg.params.H0 / H0_NATURAL_UNIT_CONVERSION
         
         # Set OmegaG and Tnow
         self.OmegaG = 5.0469e-5
@@ -114,7 +114,7 @@ class RECFAST:
         self.fHe = self.Yp / (self.not4 * (1 - self.Yp))  # n_He_tot / n_H_tot
 
         # Additional derived constants
-        self.Nnow = 3 * self.HO * self.HO * self.OmegaB / (8 * np.pi * self.G * self.mu_H * self.m_H)
+        self.Nnow = 3 * self.H0 * self.H0 * self.OmegaB / (8 * np.pi * self.G * self.mu_H * self.m_H)
         self.fu = 1.14 if self.Hswitch == 0 else 1.125
         self.b_He = 0.86  # He fudge factor
         self.tol = 1e-8
@@ -187,18 +187,18 @@ class RECFAST:
         # Get radiative rates using PPQ fit
         Rdown = 1e-19 * self.a_PPB * (Tmat / 1e4)**self.b_PPB / (
             1. + self.c_PPB * (Tmat / 1e4)**self.d_PPB)
-        Rup = Rdown * (self.CR * Tmat)**(1.5) * np.exp(-self.CDB / Tmat)
+        Rup = Rdown * (self.CR * Tmat)**1.5 * np.exp(-self.CDB / Tmat)
 
         # Calculate He using Verner & Ferland type formula
         sq_0 = np.sqrt(Tmat / self.T_0)
         sq_1 = np.sqrt(Tmat / self.T_1)
-        
+    
         Rdown_He = self.a_VF / (sq_0 * (1 + sq_0)**(1 - self.b_VF))
         Rdown_He = Rdown_He / (1 + sq_1)**(1 + self.b_VF)
-        Rup_He = Rdown_He * (self.CR * Tmat)**(1.5) * np.exp(-self.CDB_He / Tmat)
+        Rup_He = Rdown_He * (self.CR * Tmat)**1.5 * np.exp(-self.CDB_He / Tmat)
         Rup_He = 4. * Rup_He  # statistical weights factor for HeI
 
-        # Handle potential overflow
+        # Handle potential overflow for the Boltzmann factor
         He_Boltz = np.exp(min(680., self.Bfact / Tmat))
 
         # Deal with H and its fudges
@@ -210,11 +210,11 @@ class RECFAST:
                 self.AGauss1 * np.exp(-((np.log(1 + z) - self.zGauss1) / self.wGauss1)**2) +
                 self.AGauss2 * np.exp(-((np.log(1 + z) - self.zGauss2) / self.wGauss2)**2))
 
-        # Add the HeI part
+        # Add the HeI part (triplet rates)
         Rdown_trip = self.a_trip / (sq_0 * (1 + sq_0)**(1 - self.b_trip))
         Rdown_trip = Rdown_trip / ((1 + sq_1)**(1 + self.b_trip))
         Rup_trip = Rdown_trip * np.exp(-self.h_P * self.C * self.L_He2St_ion / (self.k_B * Tmat))
-        Rup_trip = Rup_trip * ((self.CR * Tmat)**1.5) * (4/3)
+        Rup_trip = Rup_trip * (self.CR * Tmat)**1.5 * (4/3)
 
         # Handle He flag conditions
         if (x_He < 5.e-9) or (x_He > 0.980):
@@ -230,51 +230,79 @@ class RECFAST:
             K_He = 1 / (self.A2P_s * pHe_s * 3 * n_He * (1 - x_He))
 
             if ((Heflag == 2) or (Heflag >= 5)) and (x_H < 0.9999999):
-                # Use fitting formula for continuum opacity of H
                 Doppler = 2 * self.k_B * Tmat / (self.m_H * self.not4 * self.C * self.C)
                 Doppler = self.C * self.L_He_2p * np.sqrt(Doppler)
-                gamma_2Ps = 3 * self.A2P_s * self.fHe * (1 - x_He) * self.C * self.C / (
-                    np.sqrt(np.pi) * self.sigma_He_2Ps * 8 * np.pi * Doppler * (1 - x_H)
-                ) / ((self.C * self.L_He_2p)**2)
-                
+                gamma_2Ps = (3 * self.A2P_s * self.fHe * (1 - x_He) * self.C * self.C /
+                            (np.sqrt(np.pi) * self.sigma_He_2Ps * 8 * np.pi * Doppler * (1 - x_H))) / ((self.C * self.L_He_2p)**2)
+            
                 pb = 0.36
                 qb = self.b_He
                 AHcon = self.A2P_s / (1 + pb * (gamma_2Ps**qb))
                 K_He = 1 / ((self.A2P_s * pHe_s + AHcon) * 3 * n_He * (1 - x_He))
 
-        # Calculate the derivatives
-        f1, f2, f3 = 0., 0., 0.
-
-        # Calculate Thomson and Hubble times
-        timeTh = (1 / (self.CT * Trad**4)) * (1 + x + self.fHe) / x
-        timeH = 2 / (3 * self.HO * (1 + z)**1.5)
-
-        # Calculate derivatives based on conditions
+        # Calculate the derivatives for H and He
         if x_H > 0.99:
             f1 = 0.
         elif x_H > 0.985:
             f1 = (x * x_H * n * Rdown - Rup * (1 - x_H) * np.exp(-self.CL / Tmat)) / (Hz * (1 + z))
         else:
             f1 = ((x * x_H * n * Rdown - Rup * (1.0 - x_H) * np.exp(-self.CL / Tmat)) *
-                  (1.0 + K * self.Lambda * n * (1.0 - x_H))) / (
-                      Hz * (1.0 + z) * (1.0 / self.fu + K * self.Lambda * n * (1.0 - x_H) / self.fu +
-                                       K * Rup * n * (1.0 - x_H)))
+                (1.0 + K * self.Lambda * n * (1.0 - x_H))) / (
+                    Hz * (1.0 + z) * (1.0 / self.fu + K * self.Lambda * n * (1.0 - x_H) / self.fu +
+                                    K * Rup * n * (1.0 - x_H)))
 
         if x_He < 1e-15:
             f2 = 0.
         else:
             f2 = ((x * x_He * n * Rdown_He - Rup_He * (1 - x_He) * np.exp(-self.CL_He / Tmat)) *
-                  (1 + K_He * self.Lambda_He * n_He * (1 - x_He) * He_Boltz)) / (
-                      Hz * (1 + z) * (1 + K_He * (self.Lambda_He + Rup_He) * n_He * (1 - x_He) * He_Boltz))
+                (1 + K_He * self.Lambda_He * n_He * (1 - x_He) * He_Boltz)) / (
+                    Hz * (1 + z) * (1 + K_He * (self.Lambda_He + Rup_He) * n_He * (1 - x_He) * He_Boltz))
+    
+        # -----------------------------
+        # Add triplet correction block
+        # -----------------------------
+        if Heflag >= 3:
+            # Calculate the Sobolev optical depth for triplet transitions
+            tauHe_t = self.A2P_t * n_He * (1 - x_He) * 3.0 / (8 * np.pi * Hz * self.L_He_2Pt**3)
+            pHe_t = (1 - np.exp(-tauHe_t)) / tauHe_t
+            # The effective two-photon decay constant for triplets
+            CL_PSt = self.h_P * self.C * (self.L_He_2Pt - self.L_He_2St) / self.k_B
+
+            if (Heflag == 3) or (Heflag == 5) or (x_H > 0.99999):
+                # When hydrogen continuum opacity is negligible
+                CfHe_t = self.A2P_t * pHe_t * np.exp(-CL_PSt / Tmat)
+                CfHe_t = CfHe_t / (Rup_trip + CfHe_t)
+            else:
+                # Include hydrogen continuum opacity effects
+                Doppler = 2 * self.k_B * Tmat / (self.m_H * self.not4 * self.C * self.C)
+                Doppler = self.C * self.L_He_2Pt * np.sqrt(Doppler)
+                gamma_2Pt = (3 * self.A2P_t * self.fHe * (1 - x_He) * self.C * self.C /
+                            (np.sqrt(np.pi) * self.sigma_He_2Pt * 8 * np.pi * Doppler * (1 - x_H))) / ((self.C * self.L_He_2Pt)**2)
+                pb = 0.66
+                qb = 0.9
+                AHcon = self.A2P_t / (1 + pb * (gamma_2Pt**qb)) / 3.0
+                CfHe_t = (self.A2P_t * pHe_t + AHcon) * np.exp(-CL_PSt / Tmat)
+                CfHe_t = CfHe_t / (Rup_trip + CfHe_t)
+            # Add the triplet correction term to f2
+            f2 += (x * x_He * n * Rdown_trip - (1 - x_He) * 3 * Rup_trip * 
+                np.exp(-self.h_P * self.C * self.L_He_2St / (self.k_B * Tmat))) \
+                * CfHe_t / (Hz * (1 + z))
+        # -----------------------------
+        # End of triplet correction block
+        # -----------------------------
+    
+        # Calculate Thomson and Hubble times
+        timeTh = (1 / (self.CT * Trad**4)) * (1 + x + self.fHe) / x
+        timeH = 2 / (3 * self.H0 * (1 + z)**1.5)
 
         # Calculate matter temperature evolution
         if timeTh < self.H_frac * timeH:
             epsilon = Hz * (1 + x + self.fHe) / (self.CT * Trad**3 * x)
             f3 = (self.Tnow + epsilon * ((1 + self.fHe) / (1 + self.fHe + x)) *
-                  ((f1 + self.fHe * f2) / x) - epsilon * dHdz / Hz + 3 * epsilon / (1 + z))
+                ((f1 + self.fHe * f2) / x) - epsilon * dHdz / Hz + 3 * epsilon / (1 + z))
         else:
             f3 = (self.CT * (Trad**4) * x / (1 + x + self.fHe) * (Tmat - Trad) / 
-                  (Hz * (1 + z)) + 2 * Tmat / (1 + z))
+                (Hz * (1 + z)) + 2 * Tmat / (1 + z))
 
         return np.array([f1, f2, f3])
 
@@ -546,8 +574,11 @@ class RECFAST:
         tau_integrated = np.cumsum(np.diff(rx, prepend=rx[0]) * reversed_tau_primes)[::-1]
 
         # Create interpolation function for τ
-        tau_interp = interp1d(x, tau_integrated, kind='cubic', fill_value="extrapolate")
-        tau_prime_interp = interp1d(x, tau_primes, kind='cubic', fill_value="extrapolate")
+        tau_interp = interp1d(x, tau_integrated, kind='cubic', fill_value="extrapolate",  bounds_error=False)
+        tau_prime_interp = interp1d(x, tau_primes, kind='cubic', fill_value="extrapolate",  bounds_error=False)
+
+        # tau_interp = CubicSpline(x, tau_integrated)
+        # tau_prime_interp = CubicSpline(x, tau_primes)
         return tau_interp, tau_prime_interp
 
 
@@ -680,10 +711,6 @@ class TanhReionizationHistory:
         else:
             return self.sol_reionization_Tmat(z)[0]
 
-
-
-
-import numpy as np
 
 def a2z(a: float) -> float:
     """Convert scale factor to redshift."""
