@@ -137,36 +137,6 @@ class RECFAST:
         self.CT = (8/3) * (self.sigma / (self.m_e * self.C)) * self.a
         self.Bfact = self.h_P * self.C * (self.L_He_2p - self.L_He_2s) / self.k_B
 
-    # def recfast_init(self, z: float) -> Tuple[float, float, float]:
-    #     """Initialize RECFAST calculations at a given redshift"""
-    #     if z > 8000.:
-    #         x_H0 = 1.
-    #         x_He0 = 1.
-    #         x0 = 1. + 2 * self.fHe
-    #     elif z > 3500.:
-    #         x_H0 = 1.
-    #         x_He0 = 1.
-    #         rhs = np.exp(1.5 * np.log(self.CR * self.Tnow / (1 + z)) - 
-    #                     self.CB1_He2 / (self.Tnow * (1 + z))) / self.Nnow
-    #         rhs = rhs * 1.  # ratio of g's is 1 for He++ <-> He+
-    #         x0 = 0.5 * (np.sqrt((rhs - 1 - self.fHe)**2 + 
-    #                            4 * (1 + 2 * self.fHe) * rhs) - (rhs - 1 - self.fHe))
-    #     elif z > 2000.:
-    #         x_H0 = 1.
-    #         rhs = np.exp(1.5 * np.log(self.CR * self.Tnow / (1 + z)) - 
-    #                     self.CB1_He1 / (self.Tnow * (1 + z))) / self.Nnow
-    #         rhs = 4 * rhs  # ratio of g's is 4 for He+ <-> He0
-    #         x_He0 = 0.5 * (np.sqrt((rhs - 1)**2 + 4 * (1 + self.fHe) * rhs) - (rhs - 1))
-    #         x0 = x_He0
-    #         x_He0 = (x0 - 1.) / self.fHe
-    #     else:
-    #         rhs = np.exp(1.5 * np.log(self.CR * self.Tnow / (1 + z)) - 
-    #                     self.CB1 / (self.Tnow * (1 + z))) / self.Nnow
-    #         x_H0 = 0.5 * (np.sqrt(rhs**2 + 4 * rhs) - rhs)
-    #         x_He0 = 0.
-    #         x0 = x_H0
-    #     return x_H0, x_He0, x0
-
     def ion_recfast(self, y: np.ndarray, z: float) -> np.ndarray:
         """Calculate RECFAST derivatives at a particular redshift"""
         x_H = y[0]
@@ -180,7 +150,7 @@ class RECFAST:
 
         # Scale factor and Hubble parameter
         a = 1 / (1 + z)
-        x_a = self.a2x(a)
+        x_a = a2x(a)
         Hz = self.bg.H_conf(x_a) / a / H0_NATURAL_UNIT_CONVERSION
         dHdz = (-self.bg.H_conf_p(x_a) + self.bg.H_conf(x_a)) / H0_NATURAL_UNIT_CONVERSION
 
@@ -327,7 +297,7 @@ class RECFAST:
         """Calculate late-time matter temperature evolution"""
         x = params[1]  # Unpack the ionization fraction from params
         a = 1 / (1 + z)
-        x_a = self.a2x(a)
+        x_a = a2x(a)
         Hz = self.bg.H_conf(x_a) / a / H0_NATURAL_UNIT_CONVERSION
         Trad = self.Tnow * (1 + z)
         dTm = (self.CT * Trad**4 * x / (1 + x + self.fHe) * 
@@ -489,13 +459,13 @@ class RECFAST:
             sol_H_He=sol_H_He.sol
         )
 
-    def get_ionization_history(self) -> IonizationHistory:
+    def get_ionization_history(self, zre_ini=50) -> IonizationHistory:
         """Create ionization history from RECFAST calculations"""
         x_grid = self.bg.x_grid
     
         # Solve RECFAST equations
         rhist = self.recfastsolve()
-        trhist = rhist.tanh_reio_solve()
+        trhist = rhist.tanh_reio_solve(zre_ini)
     
         xinitial_RECFAST = z2x(rhist.zinitial)
         Xe_initial = rhist.Xe_RECFAST(rhist.zinitial)
@@ -567,11 +537,9 @@ class RECFAST:
 
         # Calculate τ' values
         tau_primes = np.array([self.tau_prime(xi, Xe_f) for xi in x])
-    
-        # Do reverse cumulative integration
-        rx = x[::-1]  # Reverse x
-        reversed_tau_primes = tau_primes[::-1]  # Reverse τ' values
-        tau_integrated = np.cumsum(np.diff(rx, prepend=rx[0]) * reversed_tau_primes)[::-1]
+        rx = x[::-1]
+        # tau_integrated = np.cumsum(np.diff(rx, prepend=rx[0]) * reversed_tau_primes)[::-1]
+        tau_integrated = cumul_integrate(rx, tau_primes[::-1])[::-1]
 
         # Create interpolation function for τ
         tau_interp = interp1d(x, tau_integrated, kind='cubic', fill_value="extrapolate",  bounds_error=False)
@@ -585,7 +553,7 @@ class RECFAST:
 @dataclass
 class RecfastSolution:
     """Container for RECFAST solution"""
-    recfast: 'RECFAST'
+    recfast: RECFAST
     zinitial: float
     zfinal: float
     z_He_evo_start: float
@@ -655,8 +623,8 @@ class RecfastSolution:
         r = self.recfast
         x_reio = self.reionization_Xe(z)
 
-        a = 1 / (1 + z)
-        x_a = r.a2x(a)
+        a = z2a(z)
+        x_a = a2x(a)
         Hz = r.bg.H_conf(x_a) / a / H0_NATURAL_UNIT_CONVERSION
         Trad = r.Tnow * (1 + z)
         
@@ -678,7 +646,7 @@ class RecfastSolution:
             reio_deriv,
             t_span=(zre_ini, self.zfinal),
             y0=np.array([self.Tmat_RECFAST(zre_ini)]),
-            method='RK45',
+            method='DOP853',
             rtol=recfast.tol,
             dense_output=True
         )
@@ -735,3 +703,8 @@ def z2x(z: float) -> float:
 def x2z(x: float) -> float:
     """Convert x (log of scale factor) to redshift."""
     return a2z(x2a(x))
+
+def cumul_integrate(x, y):
+    dx = np.diff(x)  # Size n-1
+    avg_y = (y[1:] + y[:-1])  # Size n-1 
+    return np.concatenate([[0], 0.5 * np.cumsum(dx * avg_y)])  # Size n
