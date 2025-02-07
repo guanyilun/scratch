@@ -3,20 +3,19 @@ Cosmological Background Evolution Calculator
 
 This module implements calculations for cosmological background evolution,
 including Hubble parameter, energy densities, and neutrino-related quantities.
+
+Adapted from Bolt.jl
 """
 
 import numpy as np
 from scipy.special import zeta, roots_legendre
 from scipy.interpolate import CubicSpline
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 
-# Physical Constants
 class constants:
     zeta_3: float = zeta(3)  # Riemann ζ(3) for phase space integrals
-    # km_s_Mpc_100: float = 2.1331196424576403e-33  # eV
     km_s_Mpc_100: float = 0.00033356409519815205  # Mpc^-1
-    # G_natural: float = 6.708830858490363e-57   # eV
     G_natural: float = 2.7435866787007285e-115  # Mpc^-2
     eV_natural: float = 1.5637383059878979e29  # [eV -> Mpc^-1]
 
@@ -49,17 +48,17 @@ class CosmoParams:
         self.rho_crit = (3 / (8 * np.pi)) * self.H0**2 / constants.G_natural
         self.T_gm = (15 / np.pi**2 * self.rho_crit * self.Omega_r)**(1/4)
 
-        # neutrino
+        # neutrino: assume 1 massive neutrino
         self.T_nu = (self.N_nu/3)**(1/4)*(4/11)**(1/3) * (15/(np.pi**2)*self.rho_crit*self.Omega_r)**(1/4)
         nu_factor = (90 * constants.zeta_3 / (11 * np.pi**4)) * \
                    (self.Omega_r * self.h**2 / self.T_gm) * \
                    ((self.N_nu/3)**(3/4))  # N_nu/3 because we assume 1 massive neutrino
         self.Omega_nu = self.sum_m_nu * nu_factor / self.h**2
         self.Omega_lambda = 1 - (self.Omega_r*(1+(2/3)*(7/8)*(4/11)**(4/3)*self.N_nu) + \
-                                 self.Omega_b + self.Omega_c + self.Omega_nu)
+                                 self.Omega_b + self.Omega_c + self.Omega_nu)  # 2/3 of neutrino are massless
         self.neutrino = NeutrinoDistribution(self.T_nu)
 
-        # misc: gauss-legendre quadrature weights 
+        # gauss-legendre quadrature weights 
         self._quad_pts, self._quad_wts = roots_legendre(self.nq)
 
     def _validate(self):
@@ -102,11 +101,10 @@ class CosmoParams:
             tuple: (rho, P) density and pressure
 
         """
-        # Define integration limits
         log_q_min = np.log10(self.T_nu/30)
         log_q_max = np.log10(self.T_nu*30)
     
-        m = self.sum_m_nu  # Using sum_m_nu instead of Σm_ν
+        m = self.sum_m_nu
     
         def eps_x(x, am):
             """Calculate epsilon(x) function"""
@@ -125,11 +123,40 @@ class CosmoParams:
             dxdq_val = dxdq(q, log_q_min, log_q_max)
             return (q**4 / eps_x(x, a*m)) * self.neutrino.f0(q) / dxdq_val
     
-        # Calculate integrals using quadrature
         rho = 4*np.pi * a**(-4) * np.sum(I_rho(self._quad_pts) * self._quad_wts)
         P = 4*np.pi/3 * a**(-4) * np.sum(I_P(self._quad_pts) * self._quad_wts)
     
         return rho, P
+
+    def get_background_evolution(self) -> "BackgroundEvolution":
+        """Compute background evolution using numerical integration."""
+        # Calculate values on grid
+        H_conf_values = [self.H_conformal_x(x) for x in self.x_grid]
+        eta_values = [self.eta_x(x) for x in self.x_grid]
+        rho_nu_values = [self.rho_P_nu_0(np.exp(x))[0] for x in self.x_grid]
+        
+        # Create base splines
+        H_conf = CubicSpline(self.x_grid, H_conf_values)
+        eta = CubicSpline(self.x_grid, eta_values)
+        rho_nu = CubicSpline(self.x_grid, rho_nu_values)
+        
+        # Create derivative splines
+        H_conf_p = CubicSpline((x:=self.H_conf.x), self.H_conf(x, 1))
+        H_conf_pp = CubicSpline((x:=self.H_conf.x), self.H_conf(x, 2))
+        eta_p = CubicSpline((x:=self.eta.x), self.eta(x, 1))
+        eta_pp = CubicSpline((x:=self.eta.x), self.eta(x, 2))
+
+        return BackgroundEvolution(
+            params=self,
+            H_conf=H_conf,
+            H_conf_p=H_conf_p,
+            H_conf_pp=H_conf_pp,
+            eta=eta,
+            eta_p=eta_p,
+            eta_pp=eta_pp,
+            rho_nu=rho_nu
+        )
+
 
 @dataclass
 class NeutrinoDistribution:
@@ -144,45 +171,21 @@ class NeutrinoDistribution:
         return -q/self.T_nu / (1 + np.exp(-q/self.T_nu))
 
 
+@dataclass
 class BackgroundEvolution:
-    """
-    Handles the evolution of background cosmological quantities
-    
-    Args:
-        params: Cosmological parameters
-        x_grid: Grid in log(a) for interpolation
-        nq: Number of quadrature points for momentum integration
-    """
-    
-    def __init__(self, 
-                 params: CosmoParams, 
-                 x_grid: Optional[np.ndarray] = None):
-        self.params = params
-        
-        if x_grid is None:
-            x_grid = np.arange(-20.0, 0.01, 0.01)
-        self.x_grid = x_grid
-        
-        # Initialize splines
-        # Calculate values on grid
-        H_conf_values = [self.params.H_conformal_x(x) for x in self.x_grid]
-        eta_values = [self.params.eta_x(x) for x in self.x_grid]
-        rho_nu_values = [self.params.rho_P_nu_0(np.exp(x))[0] for x in self.x_grid]
-        
-        # Create base splines
-        self.H_conf = CubicSpline(self.x_grid, H_conf_values)
-        self.eta = CubicSpline(self.x_grid, eta_values)
-        self.rho_nu = CubicSpline(self.x_grid, rho_nu_values)
-        
-        # Create derivative splines
-        self.H_conf_p = CubicSpline((x:=self.H_conf.x), self.H_conf(x, 1))
-        self.H_conf_pp = CubicSpline((x:=self.H_conf.x), self.H_conf(x, 2))
-        self.eta_p = CubicSpline((x:=self.eta.x), self.eta(x, 1))
-        self.eta_pp = CubicSpline((x:=self.eta.x), self.eta(x, 2))
-    
+    params: CosmoParams
+    H_conf: Any
+    H_conf_p: Any
+    H_conf_pp: Any
+    eta: Any
+    eta_p: Any
+    eta_pp: Any
+    rho_nu: Any
+
+
 # utils
 def to_ui(lq, lqmi, lqma):
-    """Maps lq to the range [-1, 1] based on lqmi and lqma."""
+    """Maps lq to the unit interval [-1, 1] based on lqmi and lqma."""
     return -1 + (2 / (lqma - lqmi)) * (lq - lqmi)
 
 def from_ui(x, lqmi, lqma):
