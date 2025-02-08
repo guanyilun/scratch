@@ -11,13 +11,14 @@ import numpy as np
 from scipy.special import zeta, roots_legendre
 from scipy.interpolate import CubicSpline
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Any
 
 class constants:
     zeta_3: float = zeta(3)  # Riemann ζ(3) for phase space integrals
     km_s_Mpc_100: float = 0.00033356409519815205  # Mpc^-1
     G_natural: float = 2.7435866787007285e-115  # Mpc^-2
     eV_natural: float = 1.5637383059878979e29  # [eV -> Mpc^-1]
+
 
 class CosmoParams:
     """
@@ -31,22 +32,25 @@ class CosmoParams:
         N_nu (float): Effective number of neutrino species
         sum_m_nu (float): Sum of neutrino masses in eV
     """
-    def __init__(self, h, Omega_r, Omega_b, Omega_c, N_nu, sum_m_nu, nq=15):
+    def __init__(self, h, Omega_r, Omega_b, Omega_c, N_nu, sum_m_nu, 
+                 Omega_ax=0, m_ax=0, nq=15):
         self.h = h
+        self.H0 = self.h * constants.km_s_Mpc_100
         self.Omega_r = Omega_r
         self.Omega_b = Omega_b
         self.Omega_c = Omega_c
         self.N_nu = N_nu
         self.sum_m_nu = sum_m_nu * constants.eV_natural
 
-        self.nq = nq
-
-        self._validate()
-
         # some useful precomputations
-        self.H0 = self.h * constants.km_s_Mpc_100
         self.rho_crit = (3 / (8 * np.pi)) * self.H0**2 / constants.G_natural
         self.T_gm = (15 / np.pi**2 * self.rho_crit * self.Omega_r)**(1/4)
+
+        # axion related
+        self.Omega_ax = Omega_ax # axion density
+        self.m_ax = m_ax * constants.eV_natural
+        self._init_axion()
+
 
         # neutrino: assume 1 massive neutrino
         self.T_nu = (self.N_nu/3)**(1/4)*(4/11)**(1/3) * (15/(np.pi**2)*self.rho_crit*self.Omega_r)**(1/4)
@@ -54,12 +58,23 @@ class CosmoParams:
                    (self.Omega_r * self.h**2 / self.T_gm) * \
                    ((self.N_nu/3)**(3/4))  # N_nu/3 because we assume 1 massive neutrino
         self.Omega_nu = self.sum_m_nu * nu_factor / self.h**2
+        self.Omega_m = self.Omega_b + self.Omega_c + self.Omega_ax
         self.Omega_lambda = 1 - (self.Omega_r*(1+(2/3)*(7/8)*(4/11)**(4/3)*self.N_nu) + \
-                                 self.Omega_b + self.Omega_c + self.Omega_nu)  # 2/3 of neutrino are massless
+                                 self.Omega_m + self.Omega_nu)  # 2/3 of neutrino are massless
         self.neutrino = NeutrinoDistribution(self.T_nu)
 
         # gauss-legendre quadrature weights 
+        self.nq = nq
         self._quad_pts, self._quad_wts = roots_legendre(self.nq)
+
+        # validity check
+        self._validate()
+
+    def _init_axion(self):
+        self.phi_init = None
+        self.a_osc = None
+        # dimensionless axion mass: \twiddle{m}_ax = m_ax / (100km/s/Mpc)
+        self.m_ax_twiddle = self.m_ax / self.H0
 
     def _validate(self):
         """Validate parameters after initialization"""
@@ -68,9 +83,10 @@ class CosmoParams:
         if self.sum_m_nu < 0:
             raise ValueError("Sum of neutrino masses must be non-negative")
 
-    def H_a(self, a):
+    def H_a(self, a, phi=0, phi_dot=0):
         """Hubble parameter at scale factor a"""
         rho_nu_0, _ = self.rho_P_nu_0(a)
+
         return self.H0 * ((self.Omega_c+self.Omega_b)*(a**-3) + \
                           self.Omega_r*(a**4)*(a**-4)*(1+(2/3)*(7/8)*(4/11)**(4/3)*self.N_nu) + \
                           rho_nu_0 / self.rho_crit + \
@@ -170,6 +186,48 @@ class NeutrinoDistribution:
         """Logarithmic derivative of the distribution function"""
         return -q/self.T_nu / (1 + np.exp(-q/self.T_nu))
 
+
+class AxionSolver:
+    def __init__(self, params, xgrid=None):
+        self.bg = params
+        if x_grid is None:
+            x_grid = np.linspace(-15, 0, 1000)  # log(a)
+        self.x_grid = x_grid
+        
+    def _axion_ode(self, x, v):
+        """ODE system in terms of x = log(a)"""
+        a = np.exp(x)
+        
+        # Conformal Hubble parameter (H_conf = a*H) -> h = H_conf / (100km/s/Mpc)
+        h = self.bg.H_conformal_x(x) / constants.km_s_Mpc_100
+        
+        # Transform equations to log(a) derivatives
+        dv1_da = v[1] * self.bg.h / (a * h)
+        dv2_da = -2*v[1] - self.bg.m_ax_twiddle**2 * self.bg.h / h * v[0] * a
+
+        dv1_dx = a * dv1_da
+        dv2_dx = a * dv2_da
+
+        return [dv1_dx, dv2_dx]
+    
+    def solve(self, phi_init):
+        """Solve axion field equations with given initial condition"""
+        from scipy.integrate import solve_ivp
+        
+        # Initial conditions: phi = phi_init, phi' = 0 (starting at rest)
+        v1_init = phi_init / np.sqrt(6)
+        y0 = [v1_init, 0.0]
+        
+        sol = solve_ivp(
+            self._axion_ode,
+            t_span=(self.x_grid[0], self.x_grid[-1]),
+            y0=y0,
+            t_eval=self.x_grid,
+            method='RK45',
+            rtol=1e-6
+        )
+        
+        return sol.x, sol.y
 
 @dataclass
 class BackgroundEvolution:
