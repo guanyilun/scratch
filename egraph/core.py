@@ -2,11 +2,13 @@
 from dataclasses import dataclass
 from sympy import srepr
 
+class Expr: pass
+
 @dataclass
 class ENode:
-    val: "Expr"
+    val: Expr
     children: list["EClass"] | None
-    expr: "Expr"
+    expr: Expr
 
     def __hash__(self):
         return hash(self.expr)

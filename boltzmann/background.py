@@ -22,6 +22,7 @@ class constants:
     G_natural: float = 2.7435866787007285e-115  # Mpc^-2
     eV_natural: float = 1.5637383059878979e29  # [eV -> Mpc^-1]
 
+
 class CosmoParams:
     """
     Cosmological parameters container
@@ -488,8 +489,10 @@ class BackgroundEvolution:
             print(f"Axion oscillation begins at a = {self.params.a_osc:.2e}")
             print(f"Axion fraction achieved: {self.params.f_axion:.3f}")
 
+# ---------------------------
+# Utilities
+# ---------------------------
     
-# utils
 @njit
 def to_ui(lq, lqmi, lqma):
     """Maps lq to the range [-1, 1] based on lqmi and lqma."""

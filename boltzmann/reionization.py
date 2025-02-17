@@ -1,9 +1,10 @@
-from typing import Protocol, Any, Tuple, Callable
+from typing import Protocol, Tuple, Callable, Any
 import numpy as np
 from dataclasses import dataclass, field
 from scipy.optimize import root_scalar
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d, CubicSpline
+from background import BackgroundEvolution
 
 
 # Unit conversion constants
@@ -33,7 +34,7 @@ class IonizationHistory:
 @dataclass
 class RECFAST:
     """Python equivalent of Julia's RECFAST struct"""
-    bg: Any  # Background evolution
+    bg: BackgroundEvolution
     
     # Fundamental constants in SI units
     C: float = field(default=2.99792458e8)
