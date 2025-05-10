@@ -18,10 +18,11 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from pixell import enmap
 import cmb_utils
+from pixell import colorize
+colorize.register_color("planck")
 
 # Set random seed for reproducibility
 np.random.seed(42)
-
 
 def simulate_sky_map(shape, wcs, cmb_params, 
                      ps_poisson_params=None, 
