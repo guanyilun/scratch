@@ -194,7 +194,8 @@ def generate_ces_scan(
 
 def add_drift(scan: Scan, drift_speed: float = 1 * deg / s, direction=None, seed=None) -> Scan:
     """
-    Adds a drift to the scan pattern.
+    Adds a drift to the scan pattern. Can be used to implement a drift planet scan or used to
+    simulate wind drift in the scan.
 
     Args:
         scan (Scan): The scan object containing time, azimuth, and elevation vectors.
@@ -222,6 +223,9 @@ def add_drift(scan: Scan, drift_speed: float = 1 * deg / s, direction=None, seed
 
 
 def build_pointing_model(fplane: FocalPlane, scan: Scan):
+    """
+    Returns: A 3D array (3, n_dets, nsamps) containing RA, Dec, and PA
+    """
     q_fp = quat.rotation_xieta(fplane.x, fplane.y)
     q_bore = scan.get_q_bore()
 
@@ -231,68 +235,18 @@ def build_pointing_model(fplane: FocalPlane, scan: Scan):
     return sky_coords
 
 
-def rand_oof(nsamps, srate, fknee, alpha, nlev, seed=None):
-    """
-    Generates a random time-domain signal with a 1/f^alpha power spectrum.
-
-    Args:
-        nsamps (int): Number of samples in the output time-domain signal.
-        srate (float): Sampling rate in Hz.
-        fknee (float): Knee frequency in Hz. Below this, spectrum is flatter.
-        alpha (float): Exponent of the 1/f noise (e.g., -1 for pink noise, -2 for brown/red noise).
-                       Note: The formula uses +alpha, so if you want 1/f, alpha should be negative.
-                       Or, if you define noise_power ~ (f/fknee)^alpha, then alpha is typically negative.
-                       Your current formula noise_spec = nlev**2 * (1 + np.abs(f/fknee) ** alpha)
-                       implies alpha > 0 for a spectrum that falls off, or if it's meant to be
-                       (f/fknee)^(-alpha), then provide a positive alpha. Let's assume your
-                       formula is as intended and alpha is the power law index as written.
-        nlev (float): Noise level (amplitude scaling factor).
-        seed (int, optional): Seed for the random number generator for reproducibility.
-
-    Returns:
-        numpy.ndarray: A 1D array of length nsamps representing the noise signal.
-    """
-    if seed is not None:
-        np.random.seed(seed)
-
-    f = np.fft.rfftfreq(nsamps, d=1.0/srate)
-    
-    # Calculate Power Spectral Density (PSD)
-    psd = nlev**2 * (1 + (np.abs(f) / fknee)**alpha)
-    psd[f==0] = nlev**2  # Ensure DC component is real
-    
-    # Amplitudes from PSD
-    A = np.sqrt(psd)
-    
-    # Random phases
-    phases = np.random.uniform(0, 2 * np.pi, len(f))
-    
-    # Complex spectrum: A * exp(j*phi)
-    complex_spectrum = A * np.exp(1j * phases)
-    
-    # Ensure DC and Nyquist components are real for irfft
-    if f[0] == 0:
-        complex_spectrum[0] = A[0] # Real DC component
-    if nsamps % 2 == 0 and len(f) > 1: # Nyquist frequency
-        complex_spectrum[-1] = A[-1] * np.exp(1j * np.random.choice([0, np.pi]))
-
-    # Inverse FFT to get time-domain signal
-    tod = np.fft.irfft(complex_spectrum, n=nsamps)
-    
-    return tod
-
-
 class SkyModel(Protocol):
     def apply(self, sky_map: enmap.enmap) -> enmap.enmap:
         ...
 
 @dataclass
-class DummySkyModel:
+class DummySkyModel(SkyModel):
+    """dummy sky model that generates a random map for testing."""
     def apply(self, sky_map: enmap.enmap) -> enmap.enmap:
         return enmap.rand_gauss(sky_map.shape, sky_map.wcs)
 
 @dataclass
-class FrozenAtmosphere:
+class FrozenAtmosphere(SkyModel):
     lknee: float
     alpha: float
     nlev: float
@@ -340,6 +294,7 @@ class CorrelatedOOFModel(TODModel):
 
     def apply(self, tod: TOD) -> TOD:
         ndets, nsamps = tod.data.shape
+
         # Ensure gains, R_target, and sigma_target match the number of detectors in the TOD
         if self.gains.shape[0] != ndets:
             raise ValueError(f"Gains array shape {self.gains.shape} does not match TOD detectors {ndets}")
@@ -401,6 +356,56 @@ class CorrelatedOOFModel(TODModel):
 
         return noise_final
 
+def rand_oof(nsamps, srate, fknee, alpha, nlev, seed=None):
+    """
+    Generates a random time-domain signal with a 1/f^alpha power spectrum.
+
+    Args:
+        nsamps (int): Number of samples in the output time-domain signal.
+        srate (float): Sampling rate in Hz.
+        fknee (float): Knee frequency in Hz. Below this, spectrum is flatter.
+        alpha (float): Exponent of the 1/f noise (e.g., -1 for pink noise, -2 for brown/red noise).
+                       Note: The formula uses +alpha, so if you want 1/f, alpha should be negative.
+                       Or, if you define noise_power ~ (f/fknee)^alpha, then alpha is typically negative.
+                       Your current formula noise_spec = nlev**2 * (1 + np.abs(f/fknee) ** alpha)
+                       implies alpha > 0 for a spectrum that falls off, or if it's meant to be
+                       (f/fknee)^(-alpha), then provide a positive alpha. Let's assume your
+                       formula is as intended and alpha is the power law index as written.
+        nlev (float): Noise level (amplitude scaling factor).
+        seed (int, optional): Seed for the random number generator for reproducibility.
+
+    Returns:
+        numpy.ndarray: A 1D array of length nsamps representing the noise signal.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    f = np.fft.rfftfreq(nsamps, d=1.0/srate)
+    
+    # Calculate Power Spectral Density (PSD)
+    psd = nlev**2 * (1 + (np.abs(f) / fknee)**alpha)
+    psd[f==0] = nlev**2  # Ensure DC component is real
+    
+    # Amplitudes from PSD
+    A = np.sqrt(psd)
+    
+    # Random phases
+    phases = np.random.uniform(0, 2 * np.pi, len(f))
+    
+    # Complex spectrum: A * exp(j*phi)
+    complex_spectrum = A * np.exp(1j * phases)
+    
+    # Ensure DC and Nyquist components are real for irfft
+    if f[0] == 0:
+        complex_spectrum[0] = A[0] # Real DC component
+    if nsamps % 2 == 0 and len(f) > 1: # Nyquist frequency
+        complex_spectrum[-1] = A[-1] * np.exp(1j * np.random.choice([0, np.pi]))
+
+    # Inverse FFT to get time-domain signal
+    tod = np.fft.irfft(complex_spectrum, n=nsamps)
+    
+    return tod
+
 def generate_low_rank_correlation(n_dets: int, n_modes: int, fractions: list[float]) -> np.ndarray:
     """
     Generates a low-rank correlation matrix with specified fractions of variance per mode.
@@ -453,37 +458,36 @@ def build_tod(
     Returns:
         TOD: A TOD object containing the generated time-ordered data.
     """
-    # 1. Generate dummy detectors to determine map bounds
+    # dummy detectors to determine map bounds
     dummy_fplane = fplane.get_circular_cover(n_dummy=n_dummy)
-
-    # 2. Get bounding box of the focal plane in the scan
-    # Build pointing model
     sky_coords = build_pointing_model(dummy_fplane, scan)
     ra_bounds = np.min(sky_coords[0, :, :]), np.max(sky_coords[0, :, :])
     dec_bounds = np.min(sky_coords[1, :, :]), np.max(sky_coords[1, :, :])
     print(f"RA bounds: {np.rad2deg(ra_bounds[0]):.2f} to {np.rad2deg(ra_bounds[1]):.2f} deg")
     print(f"Dec bounds: {np.rad2deg(dec_bounds[0]):.2f} to {np.rad2deg(dec_bounds[1]):.2f} deg")
 
-    # 3. build empty sky in the bounding box
-    # pos can be either a {dec,ra} center position or a [{from,to},{dec,ra}]
-	# array giving the bottom-left and top-right corners of the desired geometry.
+    # build empty sky in the bounding box
     shape, wcs = enmap.geometry(pos=np.array([[dec_bounds[0], ra_bounds[-1]], [dec_bounds[-1], ra_bounds[0]]]), proj='car', res=0.5*arcmin)
     sky_map = enmap.zeros(shape, wcs)
     print(f"Sky map shape: {sky_map.shape}, wcs: {wcs}")
 
-    # 4. Generate the sky model
+    # generate the sky model
     for sky_model in sky_models:
         sky_map = sky_model.apply(sky_map)
 
-    # 5. Project the sky map to tod
-    # get full pointing
-    sky_coords = build_pointing_model(fplane, scan)
-    tod = sky_map.at(pos=[sky_coords[1], sky_coords[0]])  # dec, ra order
+    if len(sky_models) > 0:
+        # get the tod for each detector by reading the sky map at the detector positions
+        # only do this if we have a sky model
+        sky_coords = build_pointing_model(fplane, scan)
+        tod = sky_map.at(pos=[sky_coords[1], sky_coords[0]])  # dec, ra order
+    else:
+        tod = np.zeros((fplane.n_dets, scan.nsamps), dtype=np.float32)
+
     print(f"Sky map shape: {sky_map.shape}, tod shape: {tod.shape}")
 
     tod = TOD(scan=scan, data=tod, fplane=fplane)
 
-    # 6. Apply TOD models (like noise)
+    # apply TOD models (like noise sims)
     for tod_model in tod_models:
         tod = tod_model.apply(tod)
     return tod
