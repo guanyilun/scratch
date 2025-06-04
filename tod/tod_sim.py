@@ -1,13 +1,12 @@
 #%%
 import numpy as np
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Optional, Tuple
 from numpy.typing import NDArray
-from numpy.linalg import cholesky, LinAlgError
 from scipy.linalg import eigh
 
 from so3g.proj import coords, quat
-from pixell import enmap, curvedsky
+from pixell import enmap
 
 
 # useful units
@@ -286,7 +285,6 @@ class CorrelatedOOFModel(TODModel):
     """Adds correlated 1/f noise between detectors."""
     fknee: float           # Knee frequency in Hz
     alpha: float           # Spectral index
-    gains: NDArray         # Optical gains per detector. shape: (ndets,)
     sigma_target: NDArray  # Target std dev per detector. shape: (ndets,)
     n_modes: int = 3       # Number of modes to use for low-rank approximation
     fractions: list[float] = None
@@ -295,9 +293,6 @@ class CorrelatedOOFModel(TODModel):
     def apply(self, tod: TOD) -> TOD:
         ndets, nsamps = tod.data.shape
 
-        # Ensure gains, R_target, and sigma_target match the number of detectors in the TOD
-        if self.gains.shape[0] != ndets:
-            raise ValueError(f"Gains array shape {self.gains.shape} does not match TOD detectors {ndets}")
         if self.sigma_target.shape[0] != ndets:
              raise ValueError(f"sigma_target shape {self.sigma_target.shape} does not match TOD detectors {ndets}")
 
@@ -316,9 +311,7 @@ class CorrelatedOOFModel(TODModel):
         )
 
         # Compute latent covariance matrix
-        C_target = np.outer(self.sigma_target, self.sigma_target) * R_target
-        gains_outer = self.gains[:, None] * self.gains[None, :]
-        C_latent = np.divide(C_target, gains_outer, where=gains_outer!=0, out=np.zeros_like(C_target))
+        C_latent = np.outer(self.sigma_target, self.sigma_target) * R_target
 
         # Symmetrize and regularize
         C_latent = (C_latent + C_latent.T) / 2
@@ -350,11 +343,9 @@ class CorrelatedOOFModel(TODModel):
         complex_spectrum = A * np.exp(1j * phases)
         x_low_rank = np.fft.irfft(complex_spectrum, n=nsamps, axis=1)  # Shape (rank, nsamps)
 
-        # Project to detector space and apply gains
         noise_latent = (eigvecs * np.sqrt(eigvals)[None, :]) @ x_low_rank  # Shape (ndets, nsamps)
-        noise_final = self.gains[:, None] * noise_latent
 
-        return noise_final
+        return noise_latent
 
 def rand_oof(nsamps, srate, fknee, alpha, nlev, seed=None):
     """
@@ -418,21 +409,25 @@ def generate_low_rank_correlation(n_dets: int, n_modes: int, fractions: list[flo
     Returns:
         R: Correlation matrix (n_dets, n_dets).
     """
-    assert sum(fractions) == 1, "Fractions must sum to 1"
+    assert abs(sum(fractions) - 1.0) < 1e-10, "Fractions must sum to 1"
     assert len(fractions) == n_modes, "Mismatch between n_modes and fractions length"
     
     # Generate random orthogonal eigenvectors
-    U = np.random.randn(n_dets, n_modes)
-    U, _ = np.linalg.qr(U)  # Orthonormal columns
+    U_full = np.random.randn(n_dets, n_dets)
+    U_full, _ = np.linalg.qr(U_full)  # Full orthogonal matrix
     
-    # Eigenvalues as fractions of total variance (trace = n_dets)
-    s_squared = np.array(fractions) * n_dets
-    C = U @ np.diag(s_squared) @ U.T  # Construct covariance matrix
+    # Set up eigenvalues: first n_modes have the specified fractions
+    eigenvals = np.zeros(n_dets)
+    for i in range(n_modes):
+        eigenvals[i] = fractions[i] * n_dets
     
-    # Convert to correlation matrix
-    diag = np.diag(C)
-    scaling = 1 / np.sqrt(diag)
-    R = C * scaling[:, None] * scaling[None, :]
+    # Remaining eigenvalues are small but non-zero for numerical stability
+    remaining_trace = n_dets - np.sum(eigenvals[:n_modes])
+    if remaining_trace > 0:
+        eigenvals[n_modes:] = remaining_trace / (n_dets - n_modes)
+    
+    # Construct correlation matrix
+    R = U_full @ np.diag(eigenvals) @ U_full.T
     
     return R
 
@@ -481,6 +476,7 @@ def build_tod(
         sky_coords = build_pointing_model(fplane, scan)
         tod = sky_map.at(pos=[sky_coords[1], sky_coords[0]])  # dec, ra order
     else:
+        print("No sky models provided, initializing TOD with zeros.")
         tod = np.zeros((fplane.n_dets, scan.nsamps), dtype=np.float32)
 
     print(f"Sky map shape: {sky_map.shape}, tod shape: {tod.shape}")
@@ -491,6 +487,153 @@ def build_tod(
     for tod_model in tod_models:
         tod = tod_model.apply(tod)
     return tod
+
+
+def common_mode_analysis(tod: np.ndarray, 
+                         normalize: bool = False,
+                         remove_mean: bool = False) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Perform common mode analysis on time-ordered data using SVD.
+    
+    Args:
+        tod: Time-ordered data array of shape (n_dets, n_samps)
+        normalize: Whether to normalize detector data by their standard deviation
+        remove_mean: Whether to remove the mean from each detector's timestream
+    
+    Returns:
+        calibration: Array of shape (n_dets,) - how each detector responds to common mode
+        common_mode_timestream: Array of shape (n_samps,) - the common mode signal
+        variance_fraction: Fraction of total variance explained by the common mode
+    """
+    n_dets, n_samps = tod.shape
+    
+    # Prepare the data
+    tod_processed = tod.copy()
+    
+    # Remove mean from each detector if requested
+    if remove_mean:
+        tod_processed -= np.mean(tod_processed, axis=1, keepdims=True)
+    
+    # Normalize by standard deviation if requested
+    detector_stds = None
+    if normalize:
+        detector_stds = np.std(tod_processed, axis=1, keepdims=True)
+        # Avoid division by zero
+        detector_stds = np.where(detector_stds == 0, 1, detector_stds)
+        tod_processed /= detector_stds
+    
+    # Perform SVD
+    # tod_processed = U @ S @ V.T
+    # U: (n_dets, n_dets) - left singular vectors (detector patterns)
+    # S: (min(n_dets, n_samps),) - singular values
+    # V.T: (min(n_dets, n_samps), n_samps) - right singular vectors (time patterns)
+    U, S, Vt = np.linalg.svd(tod_processed, full_matrices=False)
+    
+    # The first singular vector corresponds to the dominant common mode
+    calibration_normalized = U[:, 0]  # Shape: (n_dets,)
+    common_mode_timestream = S[0] * Vt[0, :]  # Shape: (n_samps,)
+    
+    # Calculate the fraction of variance explained by the common mode
+    total_variance = np.sum(S**2)
+    common_mode_variance = S[0]**2
+    variance_fraction = common_mode_variance / total_variance
+    
+    # If we normalized the data, we need to scale back the calibration
+    if normalize:
+        calibration = calibration_normalized * detector_stds.flatten()
+    else:
+        calibration = calibration_normalized
+    
+    # Ensure calibration has a consistent sign convention
+    # (e.g., make the mean positive)
+    if np.mean(calibration) < 0:
+        calibration = -calibration
+        common_mode_timestream = -common_mode_timestream
+    
+    return calibration, common_mode_timestream, variance_fraction
+
+
+def analyze_multiple_modes(data: np.ndarray, 
+                           n_modes: int = 3,
+                           normalize: bool = True,
+                           remove_mean: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Analyze multiple common modes using SVD.
+    
+    Args:
+        tod: Time-ordered data array of shape (n_dets, n_samps)
+        n_modes: Number of modes to analyze
+        normalize: Whether to normalize detector data by their standard deviation
+        remove_mean: Whether to remove the mean from each detector's timestream
+    
+    Returns:
+        calibrations: Array of shape (n_dets, n_modes) - detector responses to each mode
+        mode_timestreams: Array of shape (n_modes, n_samps) - the mode signals
+        variance_fractions: Array of shape (n_modes,) - variance fraction for each mode
+    """
+    n_dets, n_samps = data.shape
+    n_modes = min(n_modes, min(n_dets, n_samps))
+    
+    # Prepare the data (same as single mode analysis)
+    data_ = data.copy()
+    
+    if remove_mean:
+        data_ -= np.mean(data_, axis=1, keepdims=True)
+    
+    detector_stds = None
+    if normalize:
+        detector_stds = np.std(data_, axis=1, keepdims=True)
+        detector_stds = np.where(detector_stds == 0, 1, detector_stds)
+        data_ /= detector_stds
+    
+    # Perform SVD
+    U, S, Vt = np.linalg.svd(data_, full_matrices=False)
+    
+    # Extract the first n_modes
+    calibrations_normalized = U[:, :n_modes]  # Shape: (n_dets, n_modes)
+    mode_timestreams = S[:n_modes, np.newaxis] * Vt[:n_modes, :]  # Shape: (n_modes, n_samps)
+    
+    # Calculate variance fractions
+    total_variance = np.sum(S**2)
+    variance_fractions = S[:n_modes]**2 / total_variance
+    
+    # Scale back calibrations if we normalized
+    if normalize:
+        calibrations = calibrations_normalized * detector_stds
+    else:
+        calibrations = calibrations_normalized
+    
+    # Ensure consistent sign convention for each mode
+    for i in range(n_modes):
+        if np.mean(calibrations[:, i]) < 0:
+            calibrations[:, i] = -calibrations[:, i]
+            mode_timestreams[i, :] = -mode_timestreams[i, :]
+    
+    return calibrations, mode_timestreams, variance_fractions
+
+def remove_common_mode(data: np.ndarray, 
+                       calibration: Optional[np.ndarray] = None,
+                       common_mode: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Remove the common mode from the TOD.
+    
+    Args:
+        tod: Original time-ordered data array of shape (n_dets, n_samps)
+        calibration: Detector calibrations from common_mode_analysis()
+        common_mode: Common mode timestream from common_mode_analysis()
+    
+    Returns:
+        tod_cleaned: TOD with common mode removed
+    """
+    if calibration is None or common_mode is None:
+        calibration, common_mode, _ = common_mode_analysis(data)
+    
+    # Reconstruct and subtract the common mode
+    common_mode_contribution = calibration[:, np.newaxis] * common_mode[np.newaxis, :]
+    tod_cleaned = tod - common_mode_contribution
+    
+    return tod_cleaned
+
 
 if __name__ == '__main__':
     # 1. Create a Focal Plane
@@ -597,8 +740,9 @@ if __name__ == '__main__':
         CorrelatedOOFModel(
             fknee=1 * Hz,
             alpha=-2,
-            gains=np.ones(focal_plane.n_dets),
             sigma_target=np.ones(focal_plane.n_dets),
+            # n_modes=1,
+            # fractions=[1],
             n_modes=2,
             fractions=[0.99, 0.01],
             seed=123,
@@ -614,8 +758,13 @@ if __name__ == '__main__':
     )
     print(f"   TOD shape: {tod.data.shape}")
 
+    # calibrate
+    gain, _, frac = common_mode_analysis(tod.data)
+    print(f"   Common mode gain: {gain[:5]}")
+    print(f"   Common mode variance fraction: {frac:.4f}")
+
     plt.figure(figsize=(12, 6))
-    plt.plot(tod.data[::5, :].T, alpha=0.1);
+    plt.plot((tod.data/gain[:, None])[::10, :].T, alpha=0.1);
 
 
 # %%
