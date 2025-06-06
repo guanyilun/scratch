@@ -7,3 +7,10 @@ lra_benchmarks
 raw_datasets
 *.png
 pretrained
+.aider*
+.env
+*.json
+models
+*.pdf
+*.txt
+*.pt

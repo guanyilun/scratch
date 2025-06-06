@@ -347,6 +347,62 @@ class CorrelatedOOFModel(TODModel):
 
         return noise_latent
 
+
+@dataclass
+class CorrelatedOOFModelSimple(TODModel):
+    """Adds correlated 1/f noise between detectors using specified modes."""
+    fknee: float | list[float]   # Knee frequency in Hz (scalar or per-mode)
+    alpha: float | list[float]    # Spectral index (scalar or per-mode)
+    variances: NDArray            # Variance of each mode. shape: (n_modes,)
+    gains: NDArray                # Mode gains: (n_modes, n_dets)
+    seed: int | None = None
+
+    def apply(self, tod: TOD) -> TOD:
+        ndets, nsamps = tod.data.shape
+        if self.gains.shape[1] != ndets:
+            raise ValueError(f"gains shape {self.gains.shape} does not match TOD detectors {ndets}")
+        if self.gains.shape[0] != len(self.variances):
+            raise ValueError(f"gains and variances must have same number of modes")
+
+        noise = self._generate_correlated_noise(ndets, nsamps, tod.scan.srate)
+        tod.data += noise
+        return tod
+
+    def _generate_correlated_noise(self, ndets: int, nsamps: int, srate: float) -> NDArray:
+        n_modes = len(self.variances)
+        rng = np.random.default_rng(self.seed)
+        
+        # Generate seeds for each mode if needed
+        seeds = rng.integers(0, 2**32, size=n_modes) if self.seed is not None else [None] * n_modes
+        
+        # Generate independent 1/f noise streams for each mode
+        mode_noise = np.zeros((n_modes, nsamps))
+        for i in range(n_modes):
+            # Get mode-specific parameters
+            fknee_i = self.fknee[i] if isinstance(self.fknee, (list, np.ndarray)) else self.fknee
+            alpha_i = self.alpha[i] if isinstance(self.alpha, (list, np.ndarray)) else self.alpha
+            
+            # Generate 1/f noise with unit variance
+            noise_stream = rand_oof(
+                nsamps=nsamps,
+                srate=srate,
+                fknee=fknee_i,
+                alpha=alpha_i,
+                nlev=1.0,  # Generate with unit variance
+                seed=seeds[i]
+            )
+            
+            # Scale to desired variance
+            mode_std = np.sqrt(self.variances[i])
+            current_std = np.std(noise_stream)
+            if current_std > 0:
+                noise_stream *= mode_std / current_std
+            mode_noise[i] = noise_stream
+        
+        # Project modes to detectors: (n_modes, nsamps) @ (n_modes, n_dets).T -> (n_dets, nsamps)
+        return self.gains.T @ mode_noise
+
+
 def rand_oof(nsamps, srate, fknee, alpha, nlev, seed=None):
     """
     Generates a random time-domain signal with a 1/f^alpha power spectrum.
@@ -430,6 +486,68 @@ def generate_low_rank_correlation(n_dets: int, n_modes: int, fractions: list[flo
     R = U_full @ np.diag(eigenvals) @ U_full.T
     
     return R
+
+@dataclass
+class CosmicRaySimulator(TODModel):
+    """
+    A simple cosmic ray simulator that adds spikes to the TOD.
+    """
+    n_per_sample: float = 0.01  # Average number of spikes per sample
+    radius_scale: float = 4 * arcmin
+    radius_shape: float = 1
+    radius_max_factor: float = 10
+    amp_shape: float = 1
+    amp_scale: float = 10
+    amp_max_factor: float = 10
+
+    def radial_profile(self, r, radius=5*arcmin):
+        return np.exp(-r / radius)
+
+    def temporal_profile(self):
+        return np.array([1, 0.2, -0.1, 0])
+
+    def apply(self, tod: TOD) -> TOD:
+        n_hits_expect = tod.scan.nsamps * self.n_per_sample
+        n_hits = int(np.random.poisson(n_hits_expect))
+        if n_hits == 0:
+            print("No cosmic ray hits generated.")
+            return tod
+        print(f"Generating {n_hits} cosmic ray hits.")
+
+        # randomly choose detector indices and sample indices for hits
+        det_indices = np.random.randint(0, tod.fplane.n_dets, size=n_hits)
+        samp_indices = np.random.randint(0, tod.scan.nsamps, size=n_hits)
+
+        # what radius and amplitudes to use for each hit?
+        radius_raw = np.random.pareto(self.radius_shape, size=n_hits) + 1
+        radius_raw = np.clip(radius_raw, 0, self.radius_max_factor - 1)
+        radius = radius_raw * self.radius_scale
+
+        amps_row = np.random.pareto(self.amp_shape, size=n_hits) + 1
+        amps_row = np.clip(amps_row, 0, self.amp_max_factor - 1)
+        amps = amps_row * self.amp_scale
+
+        fp = tod.fplane  # alias
+        for i in range(n_hits):
+            det_idx = det_indices[i]
+            samp_idx = samp_indices[i]
+            x_c = tod.fplane.x[det_idx]
+            y_c = tod.fplane.y[det_idx]
+
+            # calculate the distance from the detector to the spike
+            r = ((fp.x - x_c)**2 + (fp.y - y_c)**2)**0.5
+
+            # calculate the expected amplitude for each detector
+            A = amps[i] * self.radial_profile(r, radius=radius[i]) 
+
+            # with temporal profile
+            snip = A[:, None] * self.temporal_profile()[None, :]
+
+            samp_idx_end = min(tod.scan.nsamps, samp_idx + snip.shape[1])
+
+            # add a spike at the given detector and sample index
+            tod.data[:, samp_idx:samp_idx_end] += snip[:, :samp_idx_end-samp_idx]
+        return tod
 
 
 def build_tod(
@@ -737,17 +855,21 @@ if __name__ == '__main__':
         # FrozenAtmosphere(lknee=500, alpha=-2, nlev=1, seed=125, lmax=6000),
     ]
     tod_models = [
-        CorrelatedOOFModel(
-            fknee=1 * Hz,
-            alpha=-2,
-            sigma_target=np.ones(focal_plane.n_dets),
-            # n_modes=1,
-            # fractions=[1],
-            n_modes=2,
-            fractions=[0.99, 0.01],
-            seed=123,
+        # CorrelatedOOFModel(
+        #     fknee=1 * Hz,
+        #     alpha=-2,
+        #     sigma_target=np.ones(focal_plane.n_dets),
+        #     # n_modes=1,
+        #     # fractions=[1],
+        #     n_modes=2,
+        #     fractions=[0.99, 0.01],
+        #     seed=123,
+        # )
+        CosmicRaySimulator(
+            n_per_sample=0.01,
         )
     ]
+
     # Build the TOD
     tod = build_tod(
         fplane=focal_plane,
@@ -758,13 +880,17 @@ if __name__ == '__main__':
     )
     print(f"   TOD shape: {tod.data.shape}")
 
-    # calibrate
-    gain, _, frac = common_mode_analysis(tod.data)
-    print(f"   Common mode gain: {gain[:5]}")
-    print(f"   Common mode variance fraction: {frac:.4f}")
+    # # calibrate
+    # gain, _, frac = common_mode_analysis(tod.data)
+    # print(f"   Common mode gain: {gain[:5]}")
+    # print(f"   Common mode variance fraction: {frac:.4f}")
 
     plt.figure(figsize=(12, 6))
-    plt.plot((tod.data/gain[:, None])[::10, :].T, alpha=0.1);
+    plt.plot((tod.data)[::10, :].T, alpha=0.1);
 
 
+# %%
+    plt.figure(figsize=(12, 6))
+    plt.plot((tod.data)[:, :].T, alpha=0.5)
+    plt.xlim([5240, 5280])
 # %%
