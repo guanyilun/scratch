@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Protocol, Optional, Tuple
 from numpy.typing import NDArray
 from scipy.linalg import eigh
+import alphashape
+from shapely.geometry import Point, Polygon
 
 from so3g.proj import coords, quat
 from pixell import enmap
@@ -79,7 +81,8 @@ class FocalPlane:
         # Generate angles for the dummy detectors, evenly spaced.
         angles = np.linspace(0, 2 * np.pi, n_dummy, endpoint=False)
 
-        # Calculate coordinates of dummy detectors on the circle around the calculated center.
+        # Calculate coordinates of dummy detectors on the circle around 
+        # the calculated center.
         dummy_x = center_x + cover_radius * np.cos(angles)
         dummy_y = center_y + cover_radius * np.sin(angles)
 
@@ -550,6 +553,144 @@ class CosmicRaySimulator(TODModel):
         return tod
 
 
+@dataclass
+class Footprint:
+    """
+    A class to represent the footprint of a scan in RA and Dec coordinates.
+    This is used to visualize the scan pattern on the sky.
+    """
+    geometry: Polygon
+    bounds: Optional[Tuple[float, float, float, float]] = None
+
+
+def get_scan_footprint(fplane: FocalPlane, scan: Scan, 
+                       n_dummy: int = 50, n_levels: int = 20, interior_pts: int = 500) -> Footprint:
+    """
+    Returns the shape of the focal plane in RA and Dec coordinates using boundary detection.
+    
+    Args:
+        fplane (FocalPlane): The focal plane object containing detector positions.
+        scan (Scan): The scan object containing time, azimuth, and elevation vectors.
+    
+    Returns:
+        Footprint
+    """
+    fp = fplane.get_circular_cover(n_dummy=n_dummy)
+    sky_coords = build_pointing_model(fp, scan)  # shape: (3, n_dets, nsamps)
+    
+    # Extract ra and dec (in radians)
+    ra = sky_coords[0, :, :].ravel()
+    dec = sky_coords[1, :, :].ravel()
+    
+    # If no points, return None
+    if ra.size == 0:
+        return None
+        
+    data = np.column_stack((ra, dec))
+    
+    max_dec = np.max(dec)
+    min_dec = np.min(dec)
+    
+    # Define epsilon in radians
+    epsilon = 10 * arcmin
+    
+    # Get top and bottom slices
+    top_mask = (dec >= max_dec - epsilon) & (dec <= max_dec + epsilon)
+    bot_mask = (dec >= min_dec - epsilon) & (dec <= min_dec + epsilon)
+    
+    top = data[top_mask]
+    bot = data[bot_mask]
+    
+    # Initialize boundary points
+    boundary_points = []
+    
+    # Top boundary: leftmost and rightmost points
+    if top.size > 0:
+        tl_index = np.argmin(top[:,0])
+        tr_index = np.argmax(top[:,0])
+        boundary_points.append(top[tl_index])
+        boundary_points.append(top[tr_index])
+    
+    # Bottom boundary: leftmost and rightmost points
+    if bot.size > 0:
+        bl_index = np.argmin(bot[:,0])
+        br_index = np.argmax(bot[:,0])
+        boundary_points.append(bot[bl_index])
+        boundary_points.append(bot[br_index])
+
+    # Sample at 20 dec levels
+    dec_samples = np.linspace(min_dec + epsilon, max_dec - epsilon, n_levels)
+    for dec_sample in dec_samples:
+        sample_mask = (dec >= dec_sample - epsilon) & (dec <= dec_sample + epsilon)
+        sample_slice = data[sample_mask]
+        if sample_slice.size > 0:
+            left_index = np.argmin(sample_slice[:,0])
+            right_index = np.argmax(sample_slice[:,0])
+            boundary_points.append(sample_slice[left_index])
+            boundary_points.append(sample_slice[right_index])
+    
+    # Convert boundary_points to numpy array
+    boundary_points = np.array(boundary_points)
+    
+    # Add interior points (500 points randomly selected)
+    if data.shape[0] > interior_pts:
+        interior_indices = np.random.choice(data.shape[0], size=interior_pts, replace=False)
+        interior_points = data[interior_indices]
+        all_points = np.vstack((boundary_points, interior_points))
+    else:
+        all_points = data
+    
+    # Compute alpha shape
+    alpha_shape = alphashape.alphashape(all_points, 2)
+    bounds = [np.min(ra), np.min(dec), np.max(ra), np.max(dec)]
+    return Footprint(geometry=alpha_shape, bounds=bounds)
+
+def random_point_in_footprint(footprint: Footprint, n_points: int = 1):
+    """
+    Generates a random point within the given footprint.
+
+    Args:
+        footprint (Footprint): The footprint object containing the geometry.
+
+    Returns:
+        np.ndarray: An array of shape (n_samples, 2) containing random RA and Dec points.
+
+    """
+    min_ra, min_dec, max_ra, max_dec = footprint.bounds
+    points = []
+    while len(points) < n_points:
+        # Generate random RA and Dec within the bounds
+        ra = np.random.uniform(min_ra, max_ra)
+        dec = np.random.uniform(min_dec, max_dec)
+        
+        # Check if the point is inside the footprint
+        if footprint.geometry.contains(Point(ra, dec)):
+            points.append(([ra, dec]))
+    
+    return np.array(points)
+
+
+@dataclass
+class PointSourceSimulator(TODModel):
+    n_srcs: int = 1
+    beam_fwhm: float = 2 * arcmin
+    flux_limits: Tuple[float, float] = (1e-6, 1e-3)  # Flux limits in Jy
+
+    def apply(self, tod: TOD) -> TOD:
+        footprint = get_scan_footprint(tod.fplane, tod.scan)
+        srcs = random_point_in_footprint(footprint, n_points=self.n_srcs)
+        print(f"Simulating {self.n_srcs} point sources within footprint")
+        
+        sky_coords = build_pointing_model(tod.fplane, tod.scan)  # shape: (3, n_dets, nsamps)
+        ra_, dec_ = sky_coords[0], sky_coords[1]  # shape: (n_dets, nsamps)
+        for src in srcs:
+            print(f"\tAdding point source at RA: {np.rad2deg(src[0]):.2f} deg, Dec: {np.rad2deg(src[1]):.2f} deg")
+            r = np.sqrt((ra_ - src[0])**2 + (dec_ - src[1])**2)
+            beam = np.exp(-0.5 * (r / self.beam_fwhm)**2)
+            flux = 10**np.random.uniform(np.log10(self.flux_limits[0]), np.log10(self.flux_limits[1]))
+            tod.data += flux * beam
+        return tod 
+
 def build_tod(
     fplane: FocalPlane,
     scan: Scan,
@@ -865,9 +1006,14 @@ if __name__ == '__main__':
         #     fractions=[0.99, 0.01],
         #     seed=123,
         # )
-        CosmicRaySimulator(
-            n_per_sample=0.01,
-        )
+        # CosmicRaySimulator(
+        #     n_per_sample=0.01,
+        # ),
+        PointSourceSimulator(
+            n_srcs=5,
+            beam_fwhm=5 * arcmin,
+            flux_limits=(1e-6, 1e-3)  # Flux limits in Jy
+        ),
     ]
 
     # Build the TOD
@@ -892,5 +1038,5 @@ if __name__ == '__main__':
 # %%
     plt.figure(figsize=(12, 6))
     plt.plot((tod.data)[:, :].T, alpha=0.5)
-    plt.xlim([5240, 5280])
+    plt.xlim([4540, 5580])
 # %%
