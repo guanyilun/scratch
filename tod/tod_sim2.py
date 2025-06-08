@@ -1,12 +1,14 @@
+#%%
 import numpy as np
 from numpy.typing import NDArray
-from typing import Protocol, Optional, Tuple
+from typing import Protocol, Optional, Tuple, Any
 from dataclasses import dataclass
 from matplotlib import pyplot as plt
 import alphashape
 from shapely.geometry import Point, Polygon
 from so3g.proj import coords, quat
 from pixell import enmap
+from moby2.tod.cuts import CutsVector
 
 
 # useful units
@@ -291,14 +293,13 @@ def get_scan_footprint(fplane: FocalPlane, scan: Scan,
     bounds = [np.min(ra), np.min(dec), np.max(ra), np.max(dec)]
     return Footprint(geometry=alpha_shape, bounds=bounds)
 
-
 class SkyModel(Protocol):
-    def apply(self, sky_map: enmap.enmap) -> enmap.enmap:
+    def apply(self, sky_map: enmap.enmap, store: dict[str, Any] | None = None) -> enmap.enmap:
         """Paints the sky with a model."""
         ...
 
 class TODModel(Protocol):
-    def apply(self, tod: TOD) -> TOD:
+    def apply(self, tod: TOD, store: dict[str, Any] | None = None) -> TOD:
         """Paints the time-ordered data (TOD) with a model."""
         ...
 
@@ -312,7 +313,7 @@ class CorrelatedOOF(TODModel):
     gains: NDArray                # Mode gains: (n_modes, n_dets)
     seed: int | None = None
 
-    def apply(self, tod: TOD) -> TOD:
+    def apply(self, tod: TOD, store: dict[str, Any] | None = None) -> TOD:
         ndets, nsamps = tod.data.shape
         if self.gains.shape[1] != ndets:
             raise ValueError(f"gains shape {self.gains.shape} does not match TOD detectors {ndets}")
@@ -423,7 +424,7 @@ class CosmicRaySimulator(TODModel):
     def temporal_profile(self):
         return np.array([1, 0.2, -0.1, 0])
 
-    def apply(self, tod: TOD) -> TOD:
+    def apply(self, tod: TOD, store: dict[str, Any] | None = None) -> TOD:
         n_hits_expect = tod.scan.nsamps * self.n_per_sample
         n_hits = int(np.random.poisson(n_hits_expect))
         if n_hits == 0:
@@ -459,8 +460,24 @@ class CosmicRaySimulator(TODModel):
 
             # with temporal profile
             snip = A[:, None] * self.temporal_profile()[None, :]
-
             samp_idx_end = min(tod.scan.nsamps, samp_idx + snip.shape[1])
+
+            # add labels to store if needed
+            if store is not None:
+                thres = 0.1
+                dets = np.where(A > amps[i] * thres)[0]
+                if 'labels' not in store: store['labels'] = []
+                store['labels'].append({
+                    'dets': dets,
+                    'start': int(samp_idx),
+                    'end': int(samp_idx_end),
+                    'type': 'cr',
+                    'metadata': {
+                        'det_idx': det_idx,
+                        'radius': np.rad2deg(radius[i]),  # in degrees
+                        'amp': amps[i],
+                    }
+                })
 
             # add a spike at the given detector and sample index
             tod.data[:, samp_idx:samp_idx_end] += snip[:, :samp_idx_end-samp_idx]
@@ -473,7 +490,7 @@ class PointSourceSimulator(TODModel):
     beam_sigma: float = 2 * arcmin
     flux_limits: Tuple[float, float] = (1e-6, 1e-3)  # Flux limits in Jy
 
-    def apply(self, tod: TOD) -> TOD:
+    def apply(self, tod: TOD, store: dict[str, Any] | None = None) -> TOD:
         footprint = get_scan_footprint(tod.fplane, tod.scan)
         srcs = random_point_in_footprint(footprint, n_points=self.n_srcs)
         print(f"Simulating {self.n_srcs} point sources within footprint")
@@ -484,6 +501,29 @@ class PointSourceSimulator(TODModel):
             r = np.sqrt((ra_ - src[0])**2 + (dec_ - src[1])**2)
             beam = np.exp(-0.5 * (r / self.beam_sigma)**2)
             flux = 10**np.random.uniform(np.log10(self.flux_limits[0]), np.log10(self.flux_limits[1]))
+
+            # produce labels in store if needed
+            if store is not None:
+                thres = 0.1
+                cv = CutsVector.from_mask(np.sum(beam > thres, axis=0) > 0)
+                labels = []
+                for c in cv:
+                    sl = slice(c[0], c[1], None)
+                    dets = np.where(np.sum(beam[:, sl] > thres, axis=1) > 0)[0]
+                    labels.append({
+                        'dets': dets,
+                        'start': int(c[0]),
+                        'end': int(c[1]),
+                        'type': 'ptsrc',
+                        'metadata': {
+                            'ra': np.rad2deg(src[0]),
+                            'dec': np.rad2deg(src[1]),
+                            'flux': flux,
+                        }
+                    })
+                if 'labels' not in store: store['labels'] = labels
+                else: store['labels'].extend(labels)
+
             tod.data += flux * beam
         return tod
 
@@ -544,6 +584,9 @@ def build_tod(
     print(f"RA bounds: {np.rad2deg(ra_bounds[0]):.2f} to {np.rad2deg(ra_bounds[1]):.2f} deg")
     print(f"Dec bounds: {np.rad2deg(dec_bounds[0]):.2f} to {np.rad2deg(dec_bounds[1]):.2f} deg")
 
+    # initialize store for persistent data, will be updated in place.
+    store = {}
+
     # build empty sky in the bounding box
     shape, wcs = enmap.geometry(pos=np.array([[dec_bounds[0], ra_bounds[-1]], [dec_bounds[-1], ra_bounds[0]]]), proj='car', res=0.5*arcmin)
     sky_map = enmap.zeros(shape, wcs)
@@ -551,7 +594,7 @@ def build_tod(
 
     # generate the sky model
     for sky_model in sky_models:
-        sky_map = sky_model.apply(sky_map)
+        sky_map = sky_model.apply(sky_map, store=store)
 
     # full pointing model for the focal plane
     sky_coords = build_pointing_model(fplane, scan)
@@ -570,8 +613,8 @@ def build_tod(
 
     # apply TOD models (like noise sims)
     for tod_model in tod_models:
-        tod = tod_model.apply(tod)
-    return tod
+        tod = tod_model.apply(tod, store=store)
+    return tod, store
 
 
 if __name__ == "__main__":
@@ -580,10 +623,12 @@ if __name__ == "__main__":
     fplane = FocalPlane.from_radius(radius=fp_radius, nrows=fp_nrows)
     print(f"FocalPlane created with {fplane.n_dets} detectors.")
 
+    plt.figure()
     plt.scatter(np.rad2deg(fplane.x), np.rad2deg(fplane.y), s=20)
     plt.xlabel("RA (deg)")
     plt.ylabel("Dec (deg)")
     plt.axis('equal')
+    plt.show()
 
     sim_t0 = 1672531200.0       # Example start time (Unix timestamp, e.g., Jan 1, 2023)
     sim_az_start = 45.0 * deg   # Scan centered around this azimuth
@@ -603,9 +648,11 @@ if __name__ == "__main__":
         duration=sim_duration
     )
 
+    plt.figure()
     plt.plot(scan_pattern.t, np.rad2deg(scan_pattern.az))
     plt.ylabel("Azimuth [deg]")
     plt.xlabel("Unix Time [s]")
+    plt.show()
 
     np.random.seed(42)
 
@@ -614,7 +661,7 @@ if __name__ == "__main__":
     gains[0, :] = np.clip((np.random.randn(fplane.n_dets) * 0.2 + 1), 0, 5)
     nlevs = np.ones((nmodes,))
 
-    tod = build_tod(
+    tod, store = build_tod(
         fplane=fplane,
         scan=scan_pattern,
         tod_models=[
