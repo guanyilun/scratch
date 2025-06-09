@@ -1,5 +1,14 @@
 use nalgebra::{DMatrix, DVector};
+use rand::prelude::*;
+use rand_distr::StandardNormal;
 use thiserror::Error;
+
+// Reusable workspace for temporary matrices to avoid allocations
+#[derive(Debug, Clone)]
+struct Workspace {
+    temp_matrix: DMatrix<f64>,
+    temp_vector: DVector<f64>,
+}
 
 #[derive(Error, Debug)]
 pub enum RobustPCAError {
@@ -16,7 +25,7 @@ pub enum RobustPCAError {
 pub type Result<T> = std::result::Result<T, RobustPCAError>;
 
 /// Robust Principal Component Analysis using Accelerated Alternating Projections
-/// 
+///
 /// This implementation follows the algorithm described in:
 /// HanQin Cai, et. al. "Accelerated alternating projections for robust principal component analysis."
 /// https://arxiv.org/abs/1711.05519
@@ -24,6 +33,8 @@ pub type Result<T> = std::result::Result<T, RobustPCAError>;
 pub struct RobustPCA {
     // Configuration parameters
     pub n_components: Option<usize>,
+    // Reusable buffers
+    workspace: Option<Workspace>,
     pub max_iter: usize,
     pub tol: f64,
     pub beta: Option<f64>,
@@ -85,7 +96,16 @@ impl RobustPCA {
             singular_values: None,
             errors: Vec::new(),
             end_iter: 0,
+            workspace: None,
         }
+    }
+    
+    /// Initialize workspace buffers
+    fn init_workspace(&mut self, nrows: usize, ncols: usize) {
+        self.workspace = Some(Workspace {
+            temp_matrix: DMatrix::zeros(nrows, ncols),
+            temp_vector: DVector::zeros(nrows),
+        });
     }
     
     /// Create a new RobustPCA instance with specified number of components
@@ -184,10 +204,11 @@ impl RobustPCA {
         self.n_samples = Some(n_samples);
         self.n_features = Some(n_features);
         
-        // Set parameters - following Python reference more closely
-        let beta = self.beta.unwrap_or(1.0 / (2.0 * ((n_samples * n_features) as f64).powf(0.25)));
-        let beta_init = self.beta_init.unwrap_or(4.0 * beta);
-        let n_components = self.n_components.unwrap_or((n_samples.min(n_features)).saturating_sub(1));
+        // Set parameters adaptively
+        self.adaptive_parameters(&x_work);
+        let beta = self.beta_fitted.unwrap();
+        let beta_init = self.beta_init_fitted.unwrap();
+        let n_components = self.n_components_fitted.unwrap();
         
         if self.verbose {
             println!("Params - beta: {:.6}, beta_init: {:.6}, n_components: {}", beta, beta_init, n_components);
@@ -208,13 +229,18 @@ impl RobustPCA {
         // Initialize L, S, U, Sigma, V
         let (mut l, mut s, mut u, mut sigma, mut v) = self.initialize(&x_work, n_components, beta, beta_init)?;
         
+        // Initialize workspace buffers
+        self.init_workspace(n_samples, n_features);
         self.errors = Vec::with_capacity(self.max_iter + 1);
-        let initial_error = compute_error(&x_work, &l, &s, norm_x);
-        self.errors.push(initial_error);
-        
-        if self.verbose {
-            println!("Initial: L_norm: {:.6}, S_norm: {:.6}, X_norm: {:.6}, Error: {:.6}",
-                     frobenius_norm(&l), frobenius_norm(&s), norm_x, initial_error);
+        {
+            let workspace = self.workspace.as_mut().unwrap();
+            let initial_error = compute_error_inplace(&x_work, &l, &s, norm_x, &mut workspace.temp_matrix);
+            self.errors.push(initial_error);
+            
+            if self.verbose {
+                println!("Initial: L_norm: {:.6}, S_norm: {:.6}, X_norm: {:.6}, Error: {:.6}",
+                         frobenius_norm(&l), frobenius_norm(&s), norm_x, initial_error);
+            }
         }
         
         // Main iteration loop
@@ -226,16 +252,21 @@ impl RobustPCA {
                 v = v_new;
             }
             
-            // Update L (low-rank component)
-            let z = &x_work - &s;
-            let (l_new, u_new, sigma_new, v_new) = self.update_low_rank(&z, &u, &v, n_components)?;
+            // Update L (low-rank component) using workspace buffer
+            let temp_matrix = {
+                let workspace = self.workspace.as_mut().unwrap();
+                workspace.temp_matrix.copy_from(&x_work);
+                workspace.temp_matrix -= &s;
+                workspace.temp_matrix.clone()
+            };
+            let (l_new, u_new, sigma_new, v_new) = self.update_low_rank(&temp_matrix, &u, &v, n_components)?;
             
             l = l_new;
             u = u_new;
             sigma = sigma_new;
             v = v_new;
             
-            // Update S (sparse component)
+            // Update S (sparse component) using workspace buffer
             // Note: In Python, Sigma[self.n_components_, self.n_components_] refers to the next singular value
             // after the truncated ones. Since we have a diagonal matrix, we need to check if we have enough values.
             let next_sv = if n_components < sigma.nrows() && n_components < sigma.ncols() {
@@ -245,9 +276,20 @@ impl RobustPCA {
             };
             let first_sv = sigma[(0, 0)];
             let zeta = beta * (next_sv + (self.gamma.powi(i as i32) * first_sv));
-            s = hard_threshold(&(&x_work - &l), zeta);
             
-            let error = compute_error(&x_work, &l, &s, norm_x);
+            let s_new = {
+                let workspace = self.workspace.as_mut().unwrap();
+                workspace.temp_matrix.copy_from(&x_work);
+                workspace.temp_matrix -= &l;
+                hard_threshold(&workspace.temp_matrix, zeta)
+            };
+            s = s_new;
+            
+            // Compute error using in-place operations
+            let error = {
+                let workspace = self.workspace.as_mut().unwrap();
+                compute_error_inplace(&x_work, &l, &s, norm_x, &mut workspace.temp_matrix)
+            };
             self.errors.push(error);
             
             if self.verbose && (i % 10 == 0 || i == self.max_iter || i <= 10) {
@@ -268,7 +310,6 @@ impl RobustPCA {
                 break;
             }
         }
-        
         if !converged && self.verbose {
             println!("Did not converge after {} iterations", self.max_iter);
             self.end_iter = self.max_iter;
@@ -299,8 +340,7 @@ impl RobustPCA {
         -> Result<(DMatrix<f64>, DMatrix<f64>, DMatrix<f64>, DMatrix<f64>, DMatrix<f64>)> {
         
         // Step 1: Compute largest singular value for initial threshold (like Python svds(X, k=1))
-        let svd_values = x.clone().svd(false, false);
-        let largest_sv = svd_values.singular_values[0];
+        let largest_sv = estimate_spectral_norm(x);
         let zeta = beta_init * largest_sv;
         let s = hard_threshold(x, zeta);
         
@@ -311,7 +351,7 @@ impl RobustPCA {
         
         // Step 2: SVD of (X - S), not X! This is the key difference
         let x_minus_s = x - &s;
-        let svd_result = truncated_svd(&x_minus_s, n_components)?;
+        let svd_result = optimized_truncated_svd(&x_minus_s, n_components)?;
         
         if self.verbose {
             println!("Step 2 - (X-S)_max: {:.6}, SVD values: {:?}", x_minus_s.max(), svd_result.singular_values.as_slice());
@@ -380,11 +420,11 @@ impl RobustPCA {
         m.view_mut((ut_zv.nrows(), 0), (r2.nrows(), r2.ncols())).copy_from(&r2);
         // Bottom-right: zeros (already initialized)
         
-        // SVD of M
-        let svd_m = m.svd(true, true);
-        let u_m = svd_m.u.unwrap();
+        // SVD of M using optimized method
+        let svd_m = optimized_truncated_svd(&m, m.nrows().min(m.ncols()))?;
+        let u_m = svd_m.u;
         let sigma_new = DMatrix::from_diagonal(&svd_m.singular_values);
-        let v_m = svd_m.v_t.unwrap().transpose();
+        let v_m = svd_m.v_t.transpose();
         
         // Update U and V following Python:
         // U = np.hstack([U, Q2]) @ U_of_M[:, :n_components]
@@ -427,6 +467,132 @@ impl RobustPCA {
         
         Ok((u_new, v_new))
     }
+    
+    /// Automatically set parameters based on matrix properties
+    fn adaptive_parameters(&mut self, x: &DMatrix<f64>) {
+        let (m, n) = (x.nrows(), x.ncols());
+        
+        // Estimate rank using QR decomposition with column pivoting
+        let rank_estimate = estimate_rank(x);
+        
+        // Better beta selection based on matrix properties
+        if self.beta.is_none() {
+            let spectral_norm = estimate_spectral_norm(x);
+            self.beta_fitted = Some(1.0 / (spectral_norm * (m as f64 * n as f64).sqrt()));
+        } else {
+            self.beta_fitted = self.beta;
+        }
+        
+        // Adaptive component selection
+        if self.n_components.is_none() {
+            self.n_components_fitted = Some(rank_estimate.min(m.min(n) / 2));
+        } else {
+            self.n_components_fitted = self.n_components;
+        }
+        
+        // Set beta_init relative to beta
+        if self.beta_init.is_none() {
+            self.beta_init_fitted = Some(4.0 * self.beta_fitted.unwrap());
+        } else {
+            self.beta_init_fitted = self.beta_init;
+        }
+    }
+}
+
+/// Estimate matrix rank using QR decomposition with column pivoting
+fn estimate_rank(matrix: &DMatrix<f64>) -> usize {
+    let qr = matrix.clone().qr();
+    let r = qr.r();
+    let diag = r.diagonal();
+    
+    // Count non-zero diagonal elements (simple threshold)
+    diag.iter().filter(|&&x| x.abs() > 1e-10).count()
+}
+
+/// Estimate spectral norm (largest singular value)
+fn estimate_spectral_norm(matrix: &DMatrix<f64>) -> f64 {
+    // For large matrices, use randomized method
+    if matrix.nrows() * matrix.ncols() > 10000 {
+        randomized_largest_sv(matrix, 3)
+    } else {
+        let svd = matrix.clone().svd(false, false);
+        svd.singular_values[0]
+    }
+}
+
+/// Perform optimized truncated SVD
+fn optimized_truncated_svd(matrix: &DMatrix<f64>, k: usize) -> Result<TruncatedSVD> {
+    let (m, n) = (matrix.nrows(), matrix.ncols());
+    
+    // Use randomized SVD for large matrices when k is small
+    if k * 4 < m.min(n) {
+        randomized_svd(matrix, k)
+    } else {
+        // Use LAPACK for smaller matrices or when k is large
+        full_svd_truncated(matrix, k)
+    }
+}
+
+/// Randomized SVD algorithm
+fn randomized_svd(matrix: &DMatrix<f64>, k: usize) -> Result<TruncatedSVD> {
+    let mut rng = rand::thread_rng();
+    let (m, n) = (matrix.nrows(), matrix.ncols());
+    let p = (k + 10).min(m.min(n));
+    
+    // Generate random test matrix
+    let omega = DMatrix::from_fn(n, p, |_, _| rng.sample(StandardNormal));
+    
+    // Form sample matrix Y = A * Ω
+    let y = matrix * omega;
+    
+    // Orthonormalize Y
+    let q = y.qr().q();
+    
+    // Project A onto low-dimensional space
+    let b = q.transpose() * matrix;
+    
+    // Compute SVD of small matrix B
+    let svd_b = b.svd(true, true);
+    let u_b = svd_b.u.unwrap();
+    let v_b = svd_b.v_t.unwrap().transpose();
+    
+    // Recover left singular vectors
+    let u = &q * u_b.columns(0, k);
+    
+    Ok(TruncatedSVD {
+        u: u,
+        singular_values: svd_b.singular_values.rows(0, k).clone_owned(),
+        v_t: v_b.columns(0, k).transpose(),
+    })
+}
+
+/// Full SVD with truncation using LAPACK
+fn full_svd_truncated(matrix: &DMatrix<f64>, k: usize) -> Result<TruncatedSVD> {
+    let svd = matrix.clone().svd(true, true);
+    let n_sv = k.min(svd.singular_values.len());
+    
+    Ok(TruncatedSVD {
+        u: svd.u.unwrap().columns(0, n_sv).clone_owned(),
+        singular_values: svd.singular_values.rows(0, n_sv).clone_owned(),
+        v_t: svd.v_t.unwrap().rows(0, n_sv).clone_owned(),
+    })
+}
+
+/// Randomized algorithm to estimate largest singular value
+fn randomized_largest_sv(matrix: &DMatrix<f64>, power_iter: usize) -> f64 {
+    let mut rng = rand::thread_rng();
+    let n = matrix.ncols();
+    let mut v = DVector::from_fn(n, |_, _| rng.sample(StandardNormal));
+    v.normalize_mut();
+    
+    for _ in 0..power_iter {
+        let mut w = matrix * &v;
+        w.normalize_mut();
+        v = matrix.transpose() * &w;
+        v.normalize_mut();
+    }
+    
+    (matrix * &v).norm()
 }
 
 /// Compute the hard threshold (element-wise clipping)
@@ -463,10 +629,18 @@ fn center_matrix(matrix: &mut DMatrix<f64>, means: &DVector<f64>) {
     }
 }
 
-/// Compute relative error
-fn compute_error(x: &DMatrix<f64>, l: &DMatrix<f64>, s: &DMatrix<f64>, norm_x: f64) -> f64 {
-    let diff = x - (l + s);
-    frobenius_norm(&diff) / norm_x
+/// Compute relative error using in-place operations
+fn compute_error_inplace(
+    x: &DMatrix<f64>,
+    l: &DMatrix<f64>,
+    s: &DMatrix<f64>,
+    norm_x: f64,
+    temp: &mut DMatrix<f64>,
+) -> f64 {
+    temp.copy_from(x);
+    *temp -= l;
+    *temp -= s;  // temp = x - l - s
+    frobenius_norm(temp) / norm_x
 }
 
 /// Truncated SVD result
@@ -556,7 +730,7 @@ mod tests {
         let sparse_est = rpca.sparse.as_ref().unwrap();
 
         // Check reconstruction error
-        let reconstruction = low_rank_est + sparse_est;
+        let _reconstruction = low_rank_est + sparse_est;
         // Check reconstruction error is reasonable
         let _reconstruction = low_rank_est + sparse_est;
         let error = (_reconstruction - &data).norm();
