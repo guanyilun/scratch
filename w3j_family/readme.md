@@ -17,4 +17,4 @@ Time taken: 0.0002 seconds
 ```
 and the plot is consistent with julia implementation:
 
-![alt text](attachments/image.png)
+![image](https://github.com/user-attachments/assets/6080ace9-e09b-4359-a1b6-a5d09c8a8580)
